@@ -1,0 +1,128 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getClaudeClient, CLAUDE_MODEL, repairTruncatedJsonArray, buildPageContentBlocks } from "@/lib/claude";
+import { getSupabase } from "@/lib/supabase";
+import type { PageData, ColumnDefinition } from "@/lib/types";
+
+export const maxDuration = 300;
+
+async function appendLog(catalogId: string, status: string, message: string) {
+  const sb = getSupabase();
+  const { data } = await sb
+    .from("catalogs")
+    .select("processing_log")
+    .eq("id", catalogId)
+    .single();
+
+  const log = (data?.processing_log as object[]) ?? [];
+  log.push({ timestamp: new Date().toISOString(), status, message });
+  await sb.from("catalogs").update({ processing_log: log }).eq("id", catalogId);
+}
+
+export async function POST(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id: catalogId } = await params;
+  const sb = getSupabase();
+
+  try {
+    const body = (await req.json()) as {
+      pages: PageData[];
+      schema: { company_name: string; columns: ColumnDefinition[] };
+      category_context?: string;
+      chunk_index: number;
+      total_chunks: number;
+    };
+
+    const startPage = body.pages[0].page_number;
+    const endPage = body.pages.at(-1)!.page_number;
+
+    await appendLog(
+      catalogId,
+      "extracting",
+      `Processing chunk ${body.chunk_index + 1}/${body.total_chunks} (pages ${startPage}–${endPage})...`
+    );
+
+    const columnDesc = body.schema.columns
+      .map((c) => `  - ${c.name} (${c.type}): ${c.description}`)
+      .join("\n");
+
+    const contextNote = body.category_context
+      ? `\nPrevious category context: ${body.category_context}\nContinue with this context if the current pages don't specify a new category.\n`
+      : "";
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const content: any[] = [
+      {
+        type: "text",
+        text: `You are extracting product data from a catalog by ${body.schema.company_name}.
+
+The table schema is:
+${columnDesc}
+${contextNote}
+Extract ALL products from the following pages. Return a JSON array of objects, one per product.
+
+IMPORTANT RULES:
+- For multi-dimensional tables (e.g., price grids with sizes across columns), flatten each unique combination into its own row.
+- If a page has no product data (intro text, photos), return an empty array [].
+- Include the page_number for each product.
+- For prices, extract only the numeric value (no currency symbols).
+- If a field is not applicable, use null.
+- Return ONLY a valid JSON array (no markdown fences, no explanation).
+- Be thorough — extract EVERY product visible on each page.`,
+      },
+      ...buildPageContentBlocks(body.pages),
+    ];
+
+    const client = getClaudeClient();
+    const response = await client.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: 64000,
+      messages: [{ role: "user", content }],
+    });
+
+    const rawText = (response.content[0] as { type: string; text: string }).text;
+    const products = repairTruncatedJsonArray(rawText) as Record<string, unknown>[];
+
+    // Accumulate products in the catalog's extracted_products JSONB column
+    const { data: current } = await sb
+      .from("catalogs")
+      .select("extracted_products")
+      .eq("id", catalogId)
+      .single();
+
+    const existing = (current?.extracted_products as unknown[]) ?? [];
+    await sb
+      .from("catalogs")
+      .update({ extracted_products: [...existing, ...products] })
+      .eq("id", catalogId);
+
+    // Derive category context from last product for next chunk
+    const lastProduct = products.at(-1) as Record<string, unknown> | undefined;
+    const newContext = lastProduct
+      ? [lastProduct.category, lastProduct.sub_category]
+          .filter(Boolean)
+          .join(" > ")
+      : body.category_context ?? "";
+
+    await appendLog(
+      catalogId,
+      "extracting",
+      `Chunk ${body.chunk_index + 1}/${body.total_chunks} done: ${products.length} products extracted`
+    );
+
+    return NextResponse.json({
+      chunk_index: body.chunk_index,
+      products_found: products.length,
+      category_context: newContext,
+    });
+  } catch (err) {
+    console.error(`Chunk error:`, err);
+    await appendLog(
+      catalogId,
+      "extracting",
+      `Warning: Chunk failed (${String(err).slice(0, 120)}), continuing...`
+    );
+    return NextResponse.json({ chunk_index: -1, products_found: 0, category_context: "" });
+  }
+}
