@@ -252,10 +252,10 @@ export default function SearchPage() {
                   <Icon name="camera" className="w-7 h-7 text-indigo-400" />
                 </div>
                 <div>
-                  <p className="font-semibold text-slate-700">Drop a product image here</p>
-                  <p className="text-sm text-slate-400 mt-0.5">or click to browse — JPEG, PNG, WebP</p>
+                  <p className="font-semibold text-slate-700">Drop a product image or catalog page</p>
+                  <p className="text-sm text-slate-400 mt-0.5">Photo of a product, screenshot, or catalog page — JPEG, PNG, WebP</p>
                 </div>
-                <p className="text-xs text-slate-300">Claude Vision will identify the product and find matches</p>
+                <p className="text-xs text-slate-300">Claude Vision identifies products and finds matches in your catalogs</p>
               </div>
             </div>
           ) : (

@@ -45,14 +45,25 @@ export async function POST(req: NextRequest) {
           },
           {
             type: "text",
-            text: `You are a product search assistant. Look at this product image and generate a search query that would find this product or similar products in a building materials / sanitary ware / plumbing products database.
+            text: `You are a product search assistant for a building materials / sanitary ware / plumbing products database.
+
+Look at this image carefully. It could be:
+- A single product photo (e.g. a washbasin, toilet, pipe fitting)
+- A catalog page showing multiple products with names, specs, and prices
+- A photo taken of a physical product or a catalog page
+
+Your job: identify the PRIMARY product type(s) shown and generate search keywords that would find these products (or similar ones) in our database.
+
+If it's a catalog page with multiple products, focus on the MAIN product category/type shown (e.g. "wall hung EWC" or "table top wash basin"), not every individual variant.
+
+If you can read specific details (color, size, material, brand, model number), include them.
 
 Return ONLY valid JSON (no markdown, no explanation):
 {
-  "description": "brief product description for display",
-  "search_query": "optimized search keywords for PostgreSQL full-text search",
-  "category": "product category or null",
-  "tsquery": "PostgreSQL tsquery string using & for AND. Example: 'wash & basin & white'"
+  "description": "brief description of what you see — for display to the user",
+  "search_query": "optimized keywords for full-text search. Be specific but not too narrow.",
+  "category": "product category (e.g. 'wash basin', 'EWC', 'pipe fitting') or null",
+  "tsquery": "PostgreSQL tsquery using & for AND, | for OR. Use OR between variants. Example: 'wall & hung & EWC | wash & basin & rimless'"
 }`,
           },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
