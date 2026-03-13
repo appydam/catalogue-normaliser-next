@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import type { SearchResultItem } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -17,14 +18,19 @@ const SUGGESTED_QUERIES = [
   "pressure pipe 6kg",
 ];
 
+type SearchMode = "text" | "image";
+
 interface SearchResponse {
   query: string;
+  query_image_url?: string;
+  ai_description?: string;
   parsed_filters: Record<string, unknown>;
   results: SearchResultItem[];
   total_results: number;
 }
 
 export default function SearchPage() {
+  const [mode, setMode] = useState<SearchMode>("text");
   const [query, setQuery] = useState("");
   const [submitted, setSubmitted] = useState("");
   const [loading, setLoading] = useState(false);
@@ -32,11 +38,18 @@ export default function SearchPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
+  // Image search state
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const imageInputRef = useRef<HTMLInputElement>(null);
 
-  async function handleSearch(q?: string) {
+  useEffect(() => {
+    if (mode === "text") inputRef.current?.focus();
+  }, [mode]);
+
+  // ── Text search ────────────────────────────────────────────────────────────
+  async function handleTextSearch(q?: string) {
     const searchQuery = q ?? query;
     if (!searchQuery.trim()) return;
 
@@ -57,14 +70,70 @@ export default function SearchPage() {
         throw new Error(err.error ?? "Search failed");
       }
 
-      const data: SearchResponse = await res.json();
-      setResponse(data);
+      setResponse(await res.json());
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Search failed");
     } finally {
       setLoading(false);
     }
   }
+
+  // ── Image search ───────────────────────────────────────────────────────────
+  function handleImageSelect(file: File) {
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please select an image file");
+      return;
+    }
+    setImageFile(file);
+    const url = URL.createObjectURL(file);
+    setImagePreview(url);
+  }
+
+  async function handleImageSearch() {
+    if (!imageFile) return;
+
+    setSubmitted("Image search");
+    setLoading(true);
+    setResponse(null);
+    setExpandedId(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("image", imageFile);
+
+      const res = await fetch("/api/search/image", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error ?? "Image search failed");
+      }
+
+      const data = await res.json();
+      setSubmitted(data.query || "Image search");
+      setResponse(data);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Image search failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback(() => setIsDragging(false), []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (file) handleImageSelect(file);
+  }, []);
 
   const activeFilters = response?.parsed_filters
     ? Object.entries(response.parsed_filters).filter(([, v]) => v != null && v !== "" && !(Array.isArray(v) && v.length === 0))
@@ -73,56 +142,176 @@ export default function SearchPage() {
   return (
     <div className="p-6 md:p-8 max-w-4xl mx-auto">
       {/* Header */}
-      <div className="mb-8">
+      <div className="mb-6">
         <h2 className="text-2xl font-bold text-slate-900">Search Products</h2>
         <p className="text-sm text-slate-500 mt-0.5">
-          Ask in plain English — Claude parses your query into structured filters.
+          Search by text or upload a product image — Claude AI powers both.
         </p>
       </div>
 
-      {/* Search bar */}
-      <div className="relative mb-4">
-        <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
-          {loading ? (
-            <svg className="w-5 h-5 text-indigo-400 animate-spin" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
-          ) : (
-            <Icon name="search" className="w-5 h-5 text-slate-400" />
-          )}
-        </div>
-        <input
-          ref={inputRef}
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-          placeholder="e.g. rimless wall hung EWC under 20000"
-          className="w-full pl-12 pr-4 py-4 bg-white border border-slate-200 rounded-2xl text-slate-800 placeholder-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-transparent shadow-sm transition-shadow"
-        />
-        <div className="absolute right-3 inset-y-3">
-          <Button onClick={() => handleSearch()} disabled={!query.trim() || loading} size="sm" className="h-full px-4">
-            Search
-          </Button>
-        </div>
+      {/* Mode tabs */}
+      <div className="flex gap-1 p-1 bg-slate-100 rounded-xl w-fit mb-6">
+        <button
+          onClick={() => { setMode("text"); setResponse(null); setSubmitted(""); }}
+          className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+            mode === "text"
+              ? "bg-white text-slate-900 shadow-sm"
+              : "text-slate-500 hover:text-slate-700"
+          }`}
+        >
+          <Icon name="search" className="w-4 h-4" />
+          Text Search
+        </button>
+        <button
+          onClick={() => { setMode("image"); setResponse(null); setSubmitted(""); }}
+          className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+            mode === "image"
+              ? "bg-white text-slate-900 shadow-sm"
+              : "text-slate-500 hover:text-slate-700"
+          }`}
+        >
+          <Icon name="camera" className="w-4 h-4" />
+          Image Search
+        </button>
       </div>
 
-      {/* Suggested queries */}
-      {!submitted && (
-        <div className="flex flex-wrap gap-2 mb-8">
-          <span className="text-xs text-slate-400 self-center">Try:</span>
-          {SUGGESTED_QUERIES.map((q) => (
-            <button
-              key={q}
-              onClick={() => { setQuery(q); handleSearch(q); }}
-              className="px-3 py-1.5 bg-white border border-slate-200 text-slate-500 text-xs rounded-lg hover:bg-indigo-50 hover:border-indigo-200 hover:text-indigo-600 transition-all"
-            >
-              {q}
-            </button>
-          ))}
-        </div>
+      {/* ── Text Search Mode ─────────────────────────────────────────────────── */}
+      {mode === "text" && (
+        <>
+          <div className="relative mb-4">
+            <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
+              {loading ? (
+                <svg className="w-5 h-5 text-indigo-400 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+              ) : (
+                <Icon name="search" className="w-5 h-5 text-slate-400" />
+              )}
+            </div>
+            <input
+              ref={inputRef}
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleTextSearch()}
+              placeholder="e.g. rimless wall hung EWC under 20000"
+              className="w-full pl-12 pr-4 py-4 bg-white border border-slate-200 rounded-2xl text-slate-800 placeholder-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-transparent shadow-sm transition-shadow"
+            />
+            <div className="absolute right-3 inset-y-3">
+              <Button onClick={() => handleTextSearch()} disabled={!query.trim() || loading} size="sm" className="h-full px-4">
+                Search
+              </Button>
+            </div>
+          </div>
+
+          {!submitted && (
+            <div className="flex flex-wrap gap-2 mb-8">
+              <span className="text-xs text-slate-400 self-center">Try:</span>
+              {SUGGESTED_QUERIES.map((q) => (
+                <button
+                  key={q}
+                  onClick={() => { setQuery(q); handleTextSearch(q); }}
+                  className="px-3 py-1.5 bg-white border border-slate-200 text-slate-500 text-xs rounded-lg hover:bg-indigo-50 hover:border-indigo-200 hover:text-indigo-600 transition-all"
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+          )}
+        </>
       )}
+
+      {/* ── Image Search Mode ────────────────────────────────────────────────── */}
+      {mode === "image" && (
+        <>
+          {!imageFile ? (
+            <div
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              onClick={() => imageInputRef.current?.click()}
+              className={`border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer transition-all mb-4 ${
+                isDragging
+                  ? "border-indigo-400 bg-indigo-50 scale-[1.01]"
+                  : "border-slate-200 bg-white hover:border-indigo-300 hover:bg-slate-50"
+              }`}
+            >
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/*"
+                className="sr-only"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) handleImageSelect(f);
+                }}
+              />
+              <div className="flex flex-col items-center gap-3">
+                <div className="w-14 h-14 rounded-2xl bg-indigo-50 flex items-center justify-center">
+                  <Icon name="camera" className="w-7 h-7 text-indigo-400" />
+                </div>
+                <div>
+                  <p className="font-semibold text-slate-700">Drop a product image here</p>
+                  <p className="text-sm text-slate-400 mt-0.5">or click to browse — JPEG, PNG, WebP</p>
+                </div>
+                <p className="text-xs text-slate-300">Claude Vision will identify the product and find matches</p>
+              </div>
+            </div>
+          ) : (
+            <div className="mb-4">
+              <Card className="p-4">
+                <div className="flex items-start gap-4">
+                  <div className="relative w-32 h-32 rounded-xl overflow-hidden bg-slate-100 shrink-0">
+                    {imagePreview && (
+                      <Image
+                        src={imagePreview}
+                        alt="Search image"
+                        fill
+                        className="object-cover"
+                      />
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-semibold text-slate-800 text-sm truncate">{imageFile.name}</p>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      {(imageFile.size / 1024 / 1024).toFixed(2)} MB
+                    </p>
+                    {response?.ai_description && (
+                      <div className="mt-3 p-2.5 bg-indigo-50 rounded-lg">
+                        <p className="text-xs text-slate-400 flex items-center gap-1 mb-1">
+                          <Icon name="sparkle" className="w-3 h-3 text-indigo-400" />
+                          AI identified
+                        </p>
+                        <p className="text-xs text-indigo-700 font-medium">{response.ai_description}</p>
+                      </div>
+                    )}
+                    <div className="flex gap-2 mt-3">
+                      <Button onClick={handleImageSearch} disabled={loading} size="sm">
+                        {loading ? "Searching…" : "Search by Image"}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setImageFile(null);
+                          setImagePreview(null);
+                          setResponse(null);
+                          setSubmitted("");
+                        }}
+                      >
+                        Clear
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </Card>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── Shared results section ───────────────────────────────────────────── */}
 
       {/* AI Parsed Filters */}
       {response && activeFilters.length > 0 && (
@@ -185,7 +374,7 @@ export default function SearchPage() {
       )}
 
       {/* Empty state */}
-      {!submitted && !loading && <EmptyState />}
+      {!submitted && !loading && mode === "text" && <EmptyState />}
     </div>
   );
 }
@@ -229,7 +418,14 @@ function ResultCard({
   return (
     <Card className="overflow-hidden" hover>
       <button onClick={onToggle} className="w-full text-left p-5">
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start gap-4">
+          {/* Product image thumbnail */}
+          {item.image_url && (
+            <div className="relative w-16 h-16 rounded-lg overflow-hidden bg-slate-100 shrink-0">
+              <Image src={item.image_url} alt={item.product_name ?? ""} fill className="object-cover" />
+            </div>
+          )}
+
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-2">
               <span className="text-xs text-slate-400 bg-slate-50 border border-slate-100 px-2 py-0.5 rounded-full">
@@ -273,27 +469,37 @@ function ResultCard({
 
       {expanded && rawData && (
         <div className="border-t border-slate-100 px-5 pb-5 pt-4">
-          <p className="text-xs font-semibold text-slate-400 mb-3">Full product details</p>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-2">
-            {Object.entries(rawData)
-              .filter(([k, v]) => v != null && k !== "catalog_id" && k !== "id")
-              .map(([k, v]) => (
-                <div key={k}>
-                  <p className="text-xs text-slate-400 font-mono">{k}</p>
-                  <p className="text-xs text-slate-700 font-medium break-words">{String(v)}</p>
+          <div className="flex gap-4">
+            {/* Large image in expanded view */}
+            {item.image_url && (
+              <div className="relative w-40 h-40 rounded-xl overflow-hidden bg-slate-100 shrink-0">
+                <Image src={item.image_url} alt={item.product_name ?? ""} fill className="object-contain" />
+              </div>
+            )}
+            <div className="flex-1">
+              <p className="text-xs font-semibold text-slate-400 mb-3">Full product details</p>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-2">
+                {Object.entries(rawData)
+                  .filter(([k, v]) => v != null && k !== "catalog_id" && k !== "id" && k !== "_image_url")
+                  .map(([k, v]) => (
+                    <div key={k}>
+                      <p className="text-xs text-slate-400 font-mono">{k}</p>
+                      <p className="text-xs text-slate-700 font-medium break-words">{String(v)}</p>
+                    </div>
+                  ))}
+              </div>
+              {item.catalog_id && (
+                <div className="mt-4">
+                  <Link
+                    href={`/catalog/${item.catalog_id}`}
+                    className="text-xs text-indigo-500 hover:text-indigo-700 font-medium"
+                  >
+                    View full catalog &rarr;
+                  </Link>
                 </div>
-              ))}
-          </div>
-          {item.catalog_id && (
-            <div className="mt-4">
-              <Link
-                href={`/catalog/${item.catalog_id}`}
-                className="text-xs text-indigo-500 hover:text-indigo-700 font-medium"
-              >
-                View full catalog &rarr;
-              </Link>
+              )}
             </div>
-          )}
+          </div>
         </div>
       )}
     </Card>
@@ -308,7 +514,7 @@ function EmptyState() {
         <Icon name="search" className="w-7 h-7 text-slate-300" />
       </div>
       <p className="text-sm font-medium text-slate-500">Search across all your product catalogs</p>
-      <p className="text-xs text-slate-400 mt-1">Claude will parse your natural language query into structured filters</p>
+      <p className="text-xs text-slate-400 mt-1">Use text or upload a product image — Claude AI powers both</p>
     </div>
   );
 }

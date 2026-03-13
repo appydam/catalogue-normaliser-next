@@ -3,6 +3,7 @@ import { getClaudeClient, CLAUDE_MODEL, repairTruncatedJsonArray, buildPageConte
 import { getSupabase } from "@/lib/supabase";
 import { insertProducts } from "@/lib/data-inserter";
 import { indexProductsBatch } from "@/lib/indexer";
+import { uploadImageToS3 } from "@/lib/s3";
 import type { PageData, ColumnDefinition } from "@/lib/types";
 
 export const maxDuration = 300;
@@ -98,6 +99,28 @@ IMPORTANT RULES:
     }
 
     const columns = (catalog.schema_definition as { columns: ColumnDefinition[] }).columns;
+
+    // Upload page images to S3 and build page→imageUrl map
+    const pageImageMap = new Map<number, string>();
+    try {
+      await Promise.all(
+        body.pages.map(async (page) => {
+          const s3Key = `catalogs/${catalogId}/pages/page-${page.page_number}.png`;
+          const url = await uploadImageToS3(s3Key, page.image_base64, "image/png");
+          pageImageMap.set(page.page_number, url);
+        })
+      );
+    } catch {
+      // Non-critical — continue without images
+    }
+
+    // Attach image_url to each product based on its page_number
+    for (const product of products) {
+      const pageNum = product.page_number as number | undefined;
+      if (pageNum && pageImageMap.has(pageNum)) {
+        product._image_url = pageImageMap.get(pageNum);
+      }
+    }
 
     // Insert products directly into the dynamic table (no JSONB accumulation)
     const inserted = await insertProducts(catalog.table_name, catalogId, products, columns);

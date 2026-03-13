@@ -68,6 +68,7 @@ export interface SearchResultItem {
   description: string | null;
   price: number | null;
   price_unit: string | null;
+  image_url: string | null;
   company_name: string;
   catalog_name: string;
   raw_data: Record<string, unknown>;

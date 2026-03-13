@@ -37,6 +37,7 @@ function buildRow(catalogId: string, tableName: string, product: Record<string, 
     description: buildSearchText(product),
     price: findPrice(product),
     price_unit: findField(product, ["price_unit", "rate_unit", "price_note"]),
+    image_url: product._image_url ? String(product._image_url) : null,
     raw_data: product,
   };
 }

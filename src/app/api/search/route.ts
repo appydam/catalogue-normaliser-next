@@ -87,6 +87,7 @@ Return ONLY valid JSON (no markdown, no explanation):
       psi.description,
       psi.price,
       psi.price_unit,
+      psi.image_url,
       psi.raw_data,
       c.company_name,
       c.catalog_name,
