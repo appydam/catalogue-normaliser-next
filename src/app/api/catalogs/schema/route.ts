@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getClaudeClient, CLAUDE_MODEL, stripMarkdownFences, buildPageContentBlocks } from "@/lib/claude";
-import type { PageData } from "@/lib/types";
+
 
 export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   try {
-    const body = (await req.json()) as { pages: PageData[] };
+    const body = (await req.json()) as { pages: Array<{ page_number: number; image_url?: string; image_base64?: string; text: string }> };
     const client = getClaudeClient();
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

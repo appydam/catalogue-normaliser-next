@@ -50,16 +50,31 @@ export function repairTruncatedJsonArray(text: string): unknown[] {
   throw new Error("Could not repair truncated JSON array");
 }
 
+/**
+ * Build Claude content blocks from page data.
+ * Supports both URL-based (preferred, avoids payload limits) and base64-based images.
+ */
 export function buildPageContentBlocks(
-  pages: Array<{ page_number: number; image_base64: string; text: string }>
+  pages: Array<{ page_number: number; image_url?: string; image_base64?: string; text: string }>
 ) {
   const blocks: object[] = [];
   for (const page of pages) {
     blocks.push({ type: "text", text: `--- Page ${page.page_number} ---` });
-    blocks.push({
-      type: "image",
-      source: { type: "base64", media_type: "image/jpeg", data: page.image_base64 },
-    });
+
+    if (page.image_url) {
+      // URL source — no payload size concern, full quality
+      blocks.push({
+        type: "image",
+        source: { type: "url", url: page.image_url },
+      });
+    } else if (page.image_base64) {
+      // Fallback: inline base64
+      blocks.push({
+        type: "image",
+        source: { type: "base64", media_type: "image/png", data: page.image_base64 },
+      });
+    }
+
     if (page.text) {
       blocks.push({
         type: "text",

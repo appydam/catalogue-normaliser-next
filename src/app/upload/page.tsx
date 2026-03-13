@@ -38,9 +38,9 @@ interface FingerprintMatch {
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const PAGES_PER_CHUNK = 3;
-const SAMPLE_PAGE_COUNT = 5;
-const RENDER_SCALE = 100 / 72; // 100 DPI — keeps payload under Vercel's 4.5 MB limit
+const PAGES_PER_CHUNK = 5;
+const SAMPLE_PAGE_COUNT = 8;
+const RENDER_SCALE = 150 / 72; // 150 DPI — full quality; images go to S3, not inline in payloads
 const CONCURRENCY = 3;
 const MATCH_THRESHOLD = 70; // Minimum confidence to show match dialog
 
@@ -63,9 +63,22 @@ async function renderPageToBase64(pdfDoc: PdfDocument, pageNum: number): Promise
   canvas.height = viewport.height;
   const ctx = canvas.getContext("2d")!;
   await page.render({ canvasContext: ctx, viewport }).promise;
-  // Use JPEG at 70% quality — ~3-5x smaller than PNG, keeps payloads under Vercel limit
-  const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+  const dataUrl = canvas.toDataURL("image/png");
   return dataUrl.split(",")[1];
+}
+
+/**
+ * Upload a page image to S3 via the server endpoint and return the public URL.
+ */
+async function uploadPageImageToS3(s3Key: string, base64: string): Promise<string> {
+  const res = await fetch("/api/upload-page-image", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key: s3Key, image_base64: base64, content_type: "image/png" }),
+  });
+  if (!res.ok) throw new Error(`S3 upload failed: ${res.status}`);
+  const { url } = await res.json();
+  return url;
 }
 
 async function extractPageText(pdfDoc: PdfDocument, pageNum: number): Promise<string> {
@@ -314,18 +327,22 @@ export default function UploadPage() {
       addLog("reading", `PDF loaded: ${totalPages} pages`);
       setProgress(5);
 
-      // 2. Render sample pages for schema discovery
+      // 2. Render sample pages, upload to S3, then send URLs for schema discovery
       setStage("schema");
-      setProgressLabel("Discovering schema...");
+      setProgressLabel("Rendering & uploading sample pages...");
       addLog("schema", "Rendering sample pages for schema discovery...");
 
       const sampleIndices = getSamplePageIndices(totalPages, SAMPLE_PAGE_COUNT);
+
+      // Render and upload sample pages to S3 in parallel
       const samplePages = await Promise.all(
-        sampleIndices.map(async (pageNum) => ({
-          page_number: pageNum,
-          image_base64: await renderPageToBase64(pdfDoc, pageNum),
-          text: await extractPageText(pdfDoc, pageNum),
-        }))
+        sampleIndices.map(async (pageNum) => {
+          const base64 = await renderPageToBase64(pdfDoc, pageNum);
+          const text = await extractPageText(pdfDoc, pageNum);
+          const s3Key = `temp-schema/${Date.now()}/page-${pageNum}.png`;
+          const imageUrl = await uploadPageImageToS3(s3Key, base64);
+          return { page_number: pageNum, image_url: imageUrl, text };
+        })
       );
 
       setProgress(10);
@@ -392,13 +409,16 @@ export default function UploadPage() {
         const startPage = chunkIdx * PAGES_PER_CHUNK + 1;
         const endPage = Math.min(startPage + PAGES_PER_CHUNK - 1, totalPages);
 
+        // Render pages, upload to S3, then send only URLs to extract-chunk
         const pages = await Promise.all(
           Array.from({ length: endPage - startPage + 1 }, (_, i) => startPage + i).map(
-            async (pageNum) => ({
-              page_number: pageNum,
-              image_base64: await renderPageToBase64(pdfDoc, pageNum),
-              text: await extractPageText(pdfDoc, pageNum),
-            })
+            async (pageNum) => {
+              const base64 = await renderPageToBase64(pdfDoc, pageNum);
+              const text = await extractPageText(pdfDoc, pageNum);
+              const s3Key = `catalogs/${catalog_id}/pages/page-${pageNum}.png`;
+              const imageUrl = await uploadPageImageToS3(s3Key, base64);
+              return { page_number: pageNum, image_url: imageUrl, text };
+            }
           )
         );
 

@@ -4,7 +4,7 @@ import { getSupabase } from "@/lib/supabase";
 import { insertProducts } from "@/lib/data-inserter";
 import { indexProductsBatch } from "@/lib/indexer";
 import { uploadImageToS3 } from "@/lib/s3";
-import type { PageData, ColumnDefinition } from "@/lib/types";
+import type { ColumnDefinition } from "@/lib/types";
 
 export const maxDuration = 300;
 
@@ -30,7 +30,7 @@ export async function POST(
 
   try {
     const body = (await req.json()) as {
-      pages: PageData[];
+      pages: Array<{ page_number: number; image_url?: string; image_base64?: string; text: string }>;
       schema: { company_name: string; columns: ColumnDefinition[] };
       category_context?: string;
       chunk_index: number;
@@ -100,18 +100,21 @@ IMPORTANT RULES:
 
     const columns = (catalog.schema_definition as { columns: ColumnDefinition[] }).columns;
 
-    // Upload page images to S3 and build page→imageUrl map
+    // Build page→imageUrl map (pages may already have S3 URLs from client upload)
     const pageImageMap = new Map<number, string>();
-    try {
-      await Promise.all(
-        body.pages.map(async (page) => {
-          const s3Key = `catalogs/${catalogId}/pages/page-${page.page_number}.jpg`;
-          const url = await uploadImageToS3(s3Key, page.image_base64, "image/jpeg");
+    for (const page of body.pages) {
+      if (page.image_url) {
+        pageImageMap.set(page.page_number, page.image_url);
+      } else if (page.image_base64) {
+        // Fallback: upload base64 to S3 if URL not provided
+        try {
+          const s3Key = `catalogs/${catalogId}/pages/page-${page.page_number}.png`;
+          const url = await uploadImageToS3(s3Key, page.image_base64, "image/png");
           pageImageMap.set(page.page_number, url);
-        })
-      );
-    } catch {
-      // Non-critical — continue without images
+        } catch {
+          // Non-critical
+        }
+      }
     }
 
     // Attach image_url to each product based on its page_number

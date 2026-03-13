@@ -63,7 +63,8 @@ export interface CatalogFingerprint {
 
 export interface PageData {
   page_number: number;
-  image_base64: string;
+  image_base64?: string;
+  image_url?: string;
   text: string;
 }
 
