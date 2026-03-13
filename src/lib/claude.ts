@@ -58,7 +58,7 @@ export function buildPageContentBlocks(
     blocks.push({ type: "text", text: `--- Page ${page.page_number} ---` });
     blocks.push({
       type: "image",
-      source: { type: "base64", media_type: "image/png", data: page.image_base64 },
+      source: { type: "base64", media_type: "image/jpeg", data: page.image_base64 },
     });
     if (page.text) {
       blocks.push({

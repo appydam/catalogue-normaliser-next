@@ -38,9 +38,9 @@ interface FingerprintMatch {
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const PAGES_PER_CHUNK = 5;
-const SAMPLE_PAGE_COUNT = 8;
-const RENDER_SCALE = 150 / 72; // 150 DPI
+const PAGES_PER_CHUNK = 3;
+const SAMPLE_PAGE_COUNT = 5;
+const RENDER_SCALE = 100 / 72; // 100 DPI — keeps payload under Vercel's 4.5 MB limit
 const CONCURRENCY = 3;
 const MATCH_THRESHOLD = 70; // Minimum confidence to show match dialog
 
@@ -63,7 +63,8 @@ async function renderPageToBase64(pdfDoc: PdfDocument, pageNum: number): Promise
   canvas.height = viewport.height;
   const ctx = canvas.getContext("2d")!;
   await page.render({ canvasContext: ctx, viewport }).promise;
-  const dataUrl = canvas.toDataURL("image/png");
+  // Use JPEG at 70% quality — ~3-5x smaller than PNG, keeps payloads under Vercel limit
+  const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
   return dataUrl.split(",")[1];
 }
 
