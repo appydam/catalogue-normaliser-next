@@ -108,7 +108,7 @@ Return ONLY valid JSON (no markdown, no explanation):
       c.catalog_name,
       ${rankExpr} as relevance
     FROM product_search_index psi
-    JOIN catalogs c ON c.id = psi.catalog_id
+    JOIN master_catalogs c ON c.id = psi.catalog_id
     WHERE ${whereClause}
     ORDER BY relevance DESC
     LIMIT 20

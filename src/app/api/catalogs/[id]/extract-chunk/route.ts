@@ -11,14 +11,14 @@ export const maxDuration = 300;
 async function appendLog(catalogId: string, status: string, message: string) {
   const sb = getSupabase();
   const { data } = await sb
-    .from("catalogs")
+    .from("master_catalogs")
     .select("processing_log")
     .eq("id", catalogId)
     .single();
 
   const log = (data?.processing_log as object[]) ?? [];
   log.push({ timestamp: new Date().toISOString(), status, message });
-  await sb.from("catalogs").update({ processing_log: log }).eq("id", catalogId);
+  await sb.from("master_catalogs").update({ processing_log: log }).eq("id", catalogId);
 }
 
 export async function POST(
@@ -89,7 +89,7 @@ IMPORTANT RULES:
 
     // Fetch table_name from catalog (table was created eagerly in POST /api/catalogs)
     const { data: catalog } = await sb
-      .from("catalogs")
+      .from("master_catalogs")
       .select("table_name, schema_definition")
       .eq("id", catalogId)
       .single();

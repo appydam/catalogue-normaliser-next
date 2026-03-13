@@ -39,8 +39,26 @@ export interface Catalog {
   processing_status: ProcessingStatus;
   processing_log: ProcessingLogEntry[];
   error_message: string | null;
+  version: number;
+  parent_catalog_id: string | null;
+  is_latest_version: boolean;
+  total_pages: number | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface CatalogFingerprint {
+  id: string;
+  master_catalog_id: string;
+  file_hash_sha256: string;
+  file_size_bytes: number;
+  content_hash: string | null;
+  page_count: number | null;
+  file_name_normalized: string;
+  company_name_normalized: string;
+  catalog_name_normalized: string;
+  text_sample: string | null;
+  created_at: string;
 }
 
 export interface PageData {

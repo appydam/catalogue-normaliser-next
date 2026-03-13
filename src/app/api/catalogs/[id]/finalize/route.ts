@@ -7,25 +7,34 @@ export const maxDuration = 60; // Much faster now — just tsvector + status upd
 async function appendLog(catalogId: string, status: string, message: string) {
   const sb = getSupabase();
   const { data } = await sb
-    .from("catalogs")
+    .from("master_catalogs")
     .select("processing_log")
     .eq("id", catalogId)
     .single();
   const log = (data?.processing_log as object[]) ?? [];
   log.push({ timestamp: new Date().toISOString(), status, message });
-  await sb.from("catalogs").update({ processing_log: log, processing_status: status }).eq("id", catalogId);
+  await sb.from("master_catalogs").update({ processing_log: log, processing_status: status }).eq("id", catalogId);
 }
 
 export async function POST(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id: catalogId } = await params;
   const sb = getSupabase();
 
+  // Accept optional content fingerprint data from client
+  let contentFingerprint: { content_hash?: string; text_sample?: string } | null = null;
+  try {
+    const body = await req.json();
+    contentFingerprint = body;
+  } catch {
+    // Body is optional — finalize can be called without it
+  }
+
   try {
     const { data: catalog, error } = await sb
-      .from("catalogs")
+      .from("master_catalogs")
       .select("table_name")
       .eq("id", catalogId)
       .single();
@@ -48,7 +57,7 @@ export async function POST(
 
     // Mark complete
     const { data: finalData } = await sb
-      .from("catalogs")
+      .from("master_catalogs")
       .select("processing_log")
       .eq("id", catalogId)
       .single();
@@ -60,7 +69,7 @@ export async function POST(
     });
 
     await sb
-      .from("catalogs")
+      .from("master_catalogs")
       .update({
         processing_status: "completed",
         total_products: totalProducts,
@@ -69,12 +78,27 @@ export async function POST(
       })
       .eq("id", catalogId);
 
+    // Update content fingerprint if provided (client sends content_hash after all pages extracted)
+    if (contentFingerprint?.content_hash) {
+      try {
+        await sb
+          .from("catalog_fingerprints")
+          .update({
+            content_hash: contentFingerprint.content_hash,
+            text_sample: contentFingerprint.text_sample?.slice(0, 2000) ?? null,
+          })
+          .eq("master_catalog_id", catalogId);
+      } catch {
+        // Non-critical
+      }
+    }
+
     return NextResponse.json({ inserted: totalProducts, indexed: totalProducts });
   } catch (err) {
     console.error("Finalize error:", err);
     await appendLog(catalogId, "failed", `Finalize failed: ${String(err).slice(0, 200)}`);
     await sb
-      .from("catalogs")
+      .from("master_catalogs")
       .update({ processing_status: "failed", error_message: String(err).slice(0, 500) })
       .eq("id", catalogId);
     return NextResponse.json({ error: String(err) }, { status: 500 });

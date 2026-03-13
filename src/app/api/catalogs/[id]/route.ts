@@ -10,7 +10,7 @@ export async function GET(
   const { id } = await params;
   const sb = getSupabase();
   const { data, error } = await sb
-    .from("catalogs")
+    .from("master_catalogs")
     .select("*")
     .eq("id", id)
     .single();
@@ -29,7 +29,7 @@ export async function DELETE(
   const sb = getSupabase();
 
   const { data: catalog } = await sb
-    .from("catalogs")
+    .from("master_catalogs")
     .select("table_name")
     .eq("id", id)
     .single();
@@ -39,7 +39,7 @@ export async function DELETE(
 
   await sb.from("product_search_index").delete().eq("catalog_id", id);
   await dropDynamicTable(catalog.table_name);
-  await sb.from("catalogs").delete().eq("id", id);
+  await sb.from("master_catalogs").delete().eq("id", id);
 
   return NextResponse.json({ message: "Deleted" });
 }

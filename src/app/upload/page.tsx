@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Icon } from "@/components/ui/icon";
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { toast } from "sonner";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -16,6 +17,7 @@ interface LogEntry {
 
 type Stage =
   | "idle"
+  | "fingerprinting"
   | "reading"
   | "schema"
   | "extracting"
@@ -23,11 +25,24 @@ type Stage =
   | "done"
   | "error";
 
+interface FingerprintMatch {
+  master_catalog_id: string;
+  confidence: number;
+  match_type: "exact" | "content" | "version_update" | "similar";
+  match_details: string;
+  catalog_name: string;
+  company_name: string;
+  total_products: number;
+  version: number;
+  processing_status: string;
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 const PAGES_PER_CHUNK = 5;
 const SAMPLE_PAGE_COUNT = 8;
 const RENDER_SCALE = 150 / 72; // 150 DPI
 const CONCURRENCY = 3;
+const MATCH_THRESHOLD = 70; // Minimum confidence to show match dialog
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -71,6 +86,27 @@ function getSamplePageIndices(totalPages: number, count: number): number[] {
   return Array.from(indices).sort((a, b) => a - b).slice(0, count);
 }
 
+async function computeFileHash(file: File): Promise<string> {
+  const buffer = await file.arrayBuffer();
+  const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function computeContentHash(texts: string[]): Promise<string> {
+  const combined = texts
+    .join(" ")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const encoder = new TextEncoder();
+  const data = encoder.encode(combined);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function UploadPage() {
   const router = useRouter();
@@ -87,6 +123,17 @@ export default function UploadPage() {
   const [catalogId, setCatalogId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [chunkStatuses, setChunkStatuses] = useState<("pending" | "running" | "done" | "failed")[]>([]);
+
+  // Fingerprint state
+  const [matchDialogOpen, setMatchDialogOpen] = useState(false);
+  const [bestMatch, setBestMatch] = useState<FingerprintMatch | null>(null);
+  const [fingerprintData, setFingerprintData] = useState<{
+    file_hash: string;
+    content_hash: string;
+    text_sample: string;
+    page_count: number;
+    file_size: number;
+  } | null>(null);
 
   function addLog(status: string, message: string) {
     setLog((prev) => [...prev, { timestamp: new Date().toISOString(), status, message }]);
@@ -112,21 +159,151 @@ export default function UploadPage() {
     if (picked?.type === "application/pdf") setFile(picked);
   }
 
+  // ── Fingerprint Check ───────────────────────────────────────────────────────
+  async function checkFingerprint(): Promise<boolean> {
+    if (!file) return false;
+
+    setStage("fingerprinting");
+    setLog([]);
+    setProgress(0);
+    setErrorMsg("");
+    addLog("fingerprinting", "Computing PDF fingerprint...");
+    setProgressLabel("Checking for duplicates...");
+
+    try {
+      // Compute file hash
+      const fileHash = await computeFileHash(file);
+      setProgress(2);
+
+      // Load PDF and extract text from first 3 pages for content hash
+      const pdfjs = await loadPdfJs();
+      const arrayBuffer = await file.arrayBuffer();
+      const pdfDoc = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+      const pageCount = pdfDoc.numPages;
+
+      const pagesToSample = Math.min(3, pageCount);
+      const texts: string[] = [];
+      for (let i = 1; i <= pagesToSample; i++) {
+        texts.push(await extractPageText(pdfDoc, i));
+      }
+
+      const contentHash = await computeContentHash(texts);
+      const textSample = texts.join(" ").slice(0, 2000);
+
+      const fp = {
+        file_hash: fileHash,
+        content_hash: contentHash,
+        text_sample: textSample,
+        page_count: pageCount,
+        file_size: file.size,
+      };
+      setFingerprintData(fp);
+      setProgress(4);
+
+      addLog("fingerprinting", "Checking for existing catalogs...");
+
+      // Check server for matches
+      const res = await fetch("/api/fingerprint/check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          file_hash: fileHash,
+          content_hash: contentHash,
+          file_name: file.name,
+          page_count: pageCount,
+          file_size: file.size,
+          text_sample: textSample,
+        }),
+      });
+
+      if (!res.ok) {
+        // Non-critical — proceed without fingerprint check
+        addLog("fingerprinting", "Fingerprint check unavailable, proceeding with processing...");
+        return false;
+      }
+
+      const { best_match } = await res.json();
+
+      if (best_match && best_match.confidence >= MATCH_THRESHOLD && best_match.processing_status === "completed") {
+        setBestMatch(best_match);
+        setMatchDialogOpen(true);
+        setStage("idle");
+        return true; // Match found — show dialog, don't start processing
+      }
+
+      addLog("fingerprinting", "No existing match found — proceeding with new processing.");
+      return false;
+    } catch {
+      // Fingerprint check failure is non-critical
+      addLog("fingerprinting", "Fingerprint check failed, proceeding...");
+      return false;
+    }
+  }
+
+  // ── Handle Match Dialog Actions ─────────────────────────────────────────────
+  async function handleReuse() {
+    if (!bestMatch) return;
+    setMatchDialogOpen(false);
+
+    try {
+      const res = await fetch("/api/catalogs/reuse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ master_catalog_id: bestMatch.master_catalog_id }),
+      });
+
+      if (res.ok) {
+        toast.success("Catalog already processed! Redirecting...");
+        router.push(`/catalog/${bestMatch.master_catalog_id}`);
+      } else {
+        toast.error("Failed to reuse catalog. Processing from scratch...");
+        startProcessing(false);
+      }
+    } catch {
+      toast.error("Error. Processing from scratch...");
+      startProcessing(false);
+    }
+  }
+
+  function handleProcessAsNewVersion() {
+    setMatchDialogOpen(false);
+    startProcessing(false, {
+      parent_catalog_id: bestMatch?.master_catalog_id,
+      version: (bestMatch?.version ?? 0) + 1,
+    });
+  }
+
+  function handleProcessFromScratch() {
+    setMatchDialogOpen(false);
+    startProcessing(false);
+  }
+
+  // ── CTA Click Handler ─────────────────────────────────────────────────────
+  async function handleStartClick() {
+    const matchFound = await checkFingerprint();
+    if (!matchFound) {
+      startProcessing(false);
+    }
+  }
+
   // ── Main Pipeline ────────────────────────────────────────────────────────────
-  async function startProcessing() {
+  async function startProcessing(
+    _skipFingerprint = false,
+    versionInfo?: { parent_catalog_id?: string; version?: number }
+  ) {
     if (!file) return;
     abortRef.current = false;
     setStage("reading");
-    setLog([]);
-    setProgress(0);
+    setLog((prev) => prev.filter((l) => l.status === "fingerprinting")); // Keep fingerprint logs
+    setProgress(5);
     setErrorMsg("");
     setCatalogId(null);
     setChunkStatuses([]);
 
     try {
       // 1. Load PDF in browser
-      addLog("reading", `Loading ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)…`);
-      setProgressLabel("Loading PDF…");
+      addLog("reading", `Loading ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)...`);
+      setProgressLabel("Loading PDF...");
 
       const pdfjs = await loadPdfJs();
       const arrayBuffer = await file.arrayBuffer();
@@ -138,8 +315,8 @@ export default function UploadPage() {
 
       // 2. Render sample pages for schema discovery
       setStage("schema");
-      setProgressLabel("Discovering schema…");
-      addLog("schema", "Rendering sample pages for schema discovery…");
+      setProgressLabel("Discovering schema...");
+      addLog("schema", "Rendering sample pages for schema discovery...");
 
       const sampleIndices = getSamplePageIndices(totalPages, SAMPLE_PAGE_COUNT);
       const samplePages = await Promise.all(
@@ -151,7 +328,7 @@ export default function UploadPage() {
       );
 
       setProgress(10);
-      addLog("schema", `Sending ${samplePages.length} sample pages to Claude for schema discovery…`);
+      addLog("schema", `Sending ${samplePages.length} sample pages to Claude for schema discovery...`);
 
       const schemaRes = await fetch("/api/catalogs/schema", {
         method: "POST",
@@ -164,11 +341,29 @@ export default function UploadPage() {
 
       addLog("schema", `Schema discovered: ${schema.columns.length} columns for "${schema.company_name}"`);
 
-      // Create catalog record
+      // Create catalog record (with fingerprint + version info)
+      const catalogPayload: Record<string, unknown> = {
+        file_name: file.name,
+        schema,
+        total_pages: totalPages,
+      };
+      if (fingerprintData) {
+        catalogPayload.fingerprint = {
+          file_hash: fingerprintData.file_hash,
+          file_size: fingerprintData.file_size,
+          content_hash: fingerprintData.content_hash,
+          text_sample: fingerprintData.text_sample,
+        };
+      }
+      if (versionInfo?.parent_catalog_id) {
+        catalogPayload.parent_catalog_id = versionInfo.parent_catalog_id;
+        catalogPayload.version = versionInfo.version;
+      }
+
       const catalogRes = await fetch("/api/catalogs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ file_name: file.name, schema, total_pages: totalPages }),
+        body: JSON.stringify(catalogPayload),
       });
       if (!catalogRes.ok) throw new Error(`Failed to create catalog: ${await catalogRes.text()}`);
       const { catalog_id } = await catalogRes.json();
@@ -178,7 +373,7 @@ export default function UploadPage() {
       // 3. Parallel chunk extraction
       setStage("extracting");
       const totalChunks = Math.ceil(totalPages / PAGES_PER_CHUNK);
-      addLog("extracting", `Extracting ${totalPages} pages in ${totalChunks} chunks (${CONCURRENCY} concurrent)…`);
+      addLog("extracting", `Extracting ${totalPages} pages in ${totalChunks} chunks (${CONCURRENCY} concurrent)...`);
 
       setChunkStatuses(Array(totalChunks).fill("pending"));
 
@@ -237,7 +432,7 @@ export default function UploadPage() {
 
         completedChunks++;
         setProgress(15 + Math.round((completedChunks / totalChunks) * 70));
-        setProgressLabel(`Extracted ${completedChunks} / ${totalChunks} chunks…`);
+        setProgressLabel(`Extracted ${completedChunks} / ${totalChunks} chunks...`);
       }
 
       // Run chunks with concurrency pool
@@ -250,13 +445,20 @@ export default function UploadPage() {
       });
       await Promise.all(workers);
 
-      // 4. Finalize
+      // 4. Finalize (send content fingerprint data along)
       setStage("finalizing");
-      setProgressLabel("Finalizing — building search index…");
-      addLog("indexing", "Building full-text search index…");
+      setProgressLabel("Finalizing — building search index...");
+      addLog("indexing", "Building full-text search index...");
       setProgress(88);
 
-      const finalRes = await fetch(`/api/catalogs/${catalog_id}/finalize`, { method: "POST" });
+      const finalRes = await fetch(`/api/catalogs/${catalog_id}/finalize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content_hash: fingerprintData?.content_hash ?? null,
+          text_sample: fingerprintData?.text_sample ?? null,
+        }),
+      });
       if (!finalRes.ok) throw new Error(`Finalize failed: ${await finalRes.text()}`);
       const { inserted, indexed } = await finalRes.json();
 
@@ -276,7 +478,7 @@ export default function UploadPage() {
     }
   }
 
-  const isProcessing = ["reading", "schema", "extracting", "finalizing"].includes(stage);
+  const isProcessing = ["reading", "schema", "extracting", "finalizing", "fingerprinting"].includes(stage);
 
   return (
     <div className="p-6 md:p-8 max-w-3xl mx-auto">
@@ -349,7 +551,7 @@ export default function UploadPage() {
       {stage === "idle" && file && (
         <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
           {[
-            { icon: "search" as const, title: "Schema Discovery", desc: "Claude infers column structure from sample pages" },
+            { icon: "search" as const, title: "Smart Deduplication", desc: "Detects if this catalog was already processed" },
             { icon: "sparkle" as const, title: "Parallel Extraction", desc: `${CONCURRENCY} chunks processed concurrently for speed` },
             { icon: "catalog" as const, title: "Full-Text Index", desc: "PostgreSQL tsvector for instant search" },
           ].map((c) => (
@@ -367,7 +569,7 @@ export default function UploadPage() {
       {/* CTA */}
       {stage === "idle" && (
         <div className="mt-6">
-          <Button onClick={startProcessing} disabled={!file} className="w-full py-3" size="lg">
+          <Button onClick={handleStartClick} disabled={!file} className="w-full py-3" size="lg">
             {file ? "Start AI Extraction" : "Select a PDF first"}
           </Button>
         </div>
@@ -391,7 +593,7 @@ export default function UploadPage() {
             <Icon name="checkCircle" className="w-6 h-6 text-emerald-500" />
           </div>
           <p className="font-semibold text-emerald-700">Processing complete!</p>
-          <p className="text-sm text-emerald-600 mt-1">Redirecting to catalog view…</p>
+          <p className="text-sm text-emerald-600 mt-1">Redirecting to catalog view...</p>
         </Card>
       )}
 
@@ -414,6 +616,79 @@ export default function UploadPage() {
           </Button>
         </Card>
       )}
+
+      {/* ── Match Dialog ─────────────────────────────────────────────────────── */}
+      <Dialog open={matchDialogOpen} onOpenChange={setMatchDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogTitle>Catalog Already Processed</DialogTitle>
+          <DialogDescription>
+            This PDF matches an existing catalog in the system.
+          </DialogDescription>
+
+          {bestMatch && (
+            <div className="mt-4 space-y-4">
+              {/* Match info card */}
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-slate-500 uppercase tracking-wider">Match</span>
+                  <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+                    bestMatch.confidence >= 95
+                      ? "bg-emerald-100 text-emerald-700"
+                      : bestMatch.confidence >= 75
+                      ? "bg-amber-100 text-amber-700"
+                      : "bg-blue-100 text-blue-700"
+                  }`}>
+                    {bestMatch.confidence}% match
+                  </span>
+                </div>
+
+                <div>
+                  <p className="font-semibold text-slate-800">{bestMatch.catalog_name}</p>
+                  <p className="text-sm text-slate-500">{bestMatch.company_name}</p>
+                </div>
+
+                <div className="flex items-center gap-4 text-xs text-slate-500">
+                  <span>{bestMatch.total_products} products</span>
+                  <span>Version {bestMatch.version}</span>
+                </div>
+
+                <p className="text-xs text-slate-400 italic">{bestMatch.match_details}</p>
+              </div>
+
+              {/* Action buttons */}
+              <div className="space-y-2">
+                {bestMatch.confidence >= 90 && (
+                  <Button onClick={handleReuse} className="w-full" size="lg">
+                    Use Existing Catalog
+                  </Button>
+                )}
+
+                {bestMatch.match_type === "version_update" || bestMatch.match_type === "similar" ? (
+                  <Button
+                    onClick={handleProcessAsNewVersion}
+                    variant={bestMatch.confidence >= 90 ? "secondary" : "primary"}
+                    className="w-full"
+                  >
+                    Process as New Version (v{(bestMatch.version ?? 0) + 1})
+                  </Button>
+                ) : null}
+
+                <Button
+                  onClick={handleProcessFromScratch}
+                  variant="ghost"
+                  className="w-full text-slate-500"
+                >
+                  Process from Scratch
+                </Button>
+              </div>
+
+              <p className="text-xs text-center text-slate-400">
+                Reusing saves processing time and AI tokens.
+              </p>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -433,6 +708,7 @@ function ProcessingView({
   chunkStatuses: ("pending" | "running" | "done" | "failed")[];
 }) {
   const stages = [
+    { key: "fingerprinting", label: "Dedup Check" },
     { key: "reading", label: "Load PDF" },
     { key: "schema", label: "Discover Schema" },
     { key: "extracting", label: "Extract Products" },
@@ -520,7 +796,7 @@ function ProcessingView({
       {/* Log */}
       <div className="px-6 py-4 max-h-48 overflow-y-auto space-y-1.5">
         {log.length === 0 && (
-          <p className="text-xs text-slate-300 italic">Waiting for logs…</p>
+          <p className="text-xs text-slate-300 italic">Waiting for logs...</p>
         )}
         {[...log].reverse().map((entry, i) => (
           <div key={i} className="flex items-start gap-2">
@@ -537,6 +813,7 @@ function LogDot({ status }: { status: string }) {
   const color =
     status === "completed" ? "bg-emerald-400" :
     status === "failed" ? "bg-red-400" :
+    status === "fingerprinting" ? "bg-amber-400 animate-pulse" :
     status === "extracting" ? "bg-blue-400 animate-pulse" :
     status === "inserting" ? "bg-violet-400 animate-pulse" :
     status === "indexing" ? "bg-indigo-400 animate-pulse" :

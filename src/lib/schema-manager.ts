@@ -30,7 +30,7 @@ export async function createDynamicTable(
   const sb = getSupabase();
   const colDefs = [
     "id UUID PRIMARY KEY DEFAULT gen_random_uuid()",
-    "catalog_id UUID REFERENCES catalogs(id) ON DELETE CASCADE",
+    "catalog_id UUID REFERENCES master_catalogs(id) ON DELETE CASCADE",
     ...columns.map((col) => {
       const pgType = TYPE_MAP[col.type] ?? "TEXT";
       const colName = sanitizeColumnName(col.name);

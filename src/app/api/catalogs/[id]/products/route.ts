@@ -14,7 +14,7 @@ export async function GET(
   const sb = getSupabase();
 
   const { data: catalog } = await sb
-    .from("catalogs")
+    .from("master_catalogs")
     .select("table_name, processing_status, schema_definition")
     .eq("id", catalogId)
     .single();
