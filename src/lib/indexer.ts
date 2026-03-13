@@ -25,7 +25,27 @@ function buildSearchText(product: Record<string, unknown>): string {
     .join(" ");
 }
 
-export async function indexProducts(
+function buildRow(catalogId: string, tableName: string, product: Record<string, unknown>) {
+  return {
+    catalog_id: catalogId,
+    source_table: tableName,
+    product_name: findField(product, [
+      "product_name", "product_description", "description", "item", "name", "material_name",
+    ]),
+    category: findField(product, ["category"]),
+    sub_category: findField(product, ["sub_category", "subcategory"]),
+    description: buildSearchText(product),
+    price: findPrice(product),
+    price_unit: findField(product, ["price_unit", "rate_unit", "price_note"]),
+    raw_data: product,
+  };
+}
+
+/**
+ * Insert a batch of products into product_search_index WITHOUT updating tsvector.
+ * Called per-chunk during extraction for incremental indexing.
+ */
+export async function indexProductsBatch(
   catalogId: string,
   tableName: string,
   products: Record<string, unknown>[],
@@ -36,27 +56,21 @@ export async function indexProducts(
 
   for (let i = 0; i < products.length; i += batchSize) {
     const batch = products.slice(i, i + batchSize);
-    const rows = batch.map((product) => ({
-      catalog_id: catalogId,
-      source_table: tableName,
-      product_name: findField(product, [
-        "product_name", "product_description", "description", "item", "name", "material_name",
-      ]),
-      category: findField(product, ["category"]),
-      sub_category: findField(product, ["sub_category", "subcategory"]),
-      description: buildSearchText(product),
-      price: findPrice(product),
-      price_unit: findField(product, ["price_unit", "rate_unit", "price_note"]),
-      raw_data: product,
-    }));
+    const rows = batch.map((p) => buildRow(catalogId, tableName, p));
     await sb.from("product_search_index").insert(rows);
     indexed += rows.length;
   }
 
-  // Update tsvector
+  return indexed;
+}
+
+/**
+ * Build the tsvector search_text for all un-indexed rows of a catalog.
+ * Called once at finalize after all chunks are done.
+ */
+export async function buildSearchIndex(catalogId: string): Promise<void> {
+  const sb = getSupabase();
   await sb.rpc("exec_sql", {
     query: `UPDATE product_search_index SET search_text = to_tsvector('english', coalesce(description, '')) WHERE catalog_id = '${catalogId}' AND search_text IS NULL;`,
   });
-
-  return indexed;
 }

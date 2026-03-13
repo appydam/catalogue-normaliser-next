@@ -2,6 +2,10 @@
 
 import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Icon } from "@/components/ui/icon";
+import { toast } from "sonner";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface LogEntry {
@@ -23,23 +27,20 @@ type Stage =
 const PAGES_PER_CHUNK = 5;
 const SAMPLE_PAGE_COUNT = 8;
 const RENDER_SCALE = 150 / 72; // 150 DPI
+const CONCURRENCY = 3;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type PdfDocument = any;
 
 async function loadPdfJs(): Promise<{ getDocument: (src: { data: ArrayBuffer }) => { promise: Promise<PdfDocument> }; GlobalWorkerOptions: { workerSrc: string } }> {
-  // Dynamic import to keep pdfjs out of the server bundle
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf" as string);
   pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
   return pdfjs;
 }
 
-async function renderPageToBase64(
-  pdfDoc: PdfDocument,
-  pageNum: number
-): Promise<string> {
+async function renderPageToBase64(pdfDoc: PdfDocument, pageNum: number): Promise<string> {
   const page = await pdfDoc.getPage(pageNum);
   const viewport = page.getViewport({ scale: RENDER_SCALE });
   const canvas = document.createElement("canvas");
@@ -48,19 +49,26 @@ async function renderPageToBase64(
   const ctx = canvas.getContext("2d")!;
   await page.render({ canvasContext: ctx, viewport }).promise;
   const dataUrl = canvas.toDataURL("image/png");
-  return dataUrl.split(",")[1]; // strip data: prefix
+  return dataUrl.split(",")[1];
 }
 
-async function extractPageText(
-  pdfDoc: PdfDocument,
-  pageNum: number
-): Promise<string> {
+async function extractPageText(pdfDoc: PdfDocument, pageNum: number): Promise<string> {
   const page = await pdfDoc.getPage(pageNum);
   const content = await page.getTextContent();
   return content.items
     .map((item: { str?: string }) => item.str ?? "")
     .join(" ")
     .trim();
+}
+
+function getSamplePageIndices(totalPages: number, count: number): number[] {
+  if (totalPages <= count) return Array.from({ length: totalPages }, (_, i) => i + 1);
+  const indices = new Set<number>([1, 2, totalPages]);
+  const step = Math.floor(totalPages / (count - 2));
+  for (let i = 1; indices.size < count && i * step <= totalPages; i++) {
+    indices.add(Math.min(i * step, totalPages));
+  }
+  return Array.from(indices).sort((a, b) => a - b).slice(0, count);
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -73,17 +81,15 @@ export default function UploadPage() {
   const [file, setFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [stage, setStage] = useState<Stage>("idle");
-  const [progress, setProgress] = useState(0); // 0-100
+  const [progress, setProgress] = useState(0);
   const [progressLabel, setProgressLabel] = useState("");
   const [log, setLog] = useState<LogEntry[]>([]);
   const [catalogId, setCatalogId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>("");
+  const [chunkStatuses, setChunkStatuses] = useState<("pending" | "running" | "done" | "failed")[]>([]);
 
   function addLog(status: string, message: string) {
-    setLog((prev) => [
-      ...prev,
-      { timestamp: new Date().toISOString(), status, message },
-    ]);
+    setLog((prev) => [...prev, { timestamp: new Date().toISOString(), status, message }]);
   }
 
   // ── Drag & Drop ─────────────────────────────────────────────────────────────
@@ -115,6 +121,7 @@ export default function UploadPage() {
     setProgress(0);
     setErrorMsg("");
     setCatalogId(null);
+    setChunkStatuses([]);
 
     try {
       // 1. Load PDF in browser
@@ -157,7 +164,7 @@ export default function UploadPage() {
 
       addLog("schema", `Schema discovered: ${schema.columns.length} columns for "${schema.company_name}"`);
 
-      // Create catalog record in Supabase
+      // Create catalog record
       const catalogRes = await fetch("/api/catalogs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -168,21 +175,27 @@ export default function UploadPage() {
       setCatalogId(catalog_id);
       setProgress(15);
 
-      // 3. Render all pages and process in chunks
+      // 3. Parallel chunk extraction
       setStage("extracting");
       const totalChunks = Math.ceil(totalPages / PAGES_PER_CHUNK);
-      addLog("extracting", `Extracting ${totalPages} pages in ${totalChunks} chunks…`);
+      addLog("extracting", `Extracting ${totalPages} pages in ${totalChunks} chunks (${CONCURRENCY} concurrent)…`);
 
-      let categoryContext = "";
-      for (let chunkIdx = 0; chunkIdx < totalChunks; chunkIdx++) {
-        if (abortRef.current) throw new Error("Cancelled by user");
+      setChunkStatuses(Array(totalChunks).fill("pending"));
+
+      let completedChunks = 0;
+
+      async function processChunk(chunkIdx: number) {
+        if (abortRef.current) return;
+
+        setChunkStatuses((prev) => {
+          const next = [...prev];
+          next[chunkIdx] = "running";
+          return next;
+        });
 
         const startPage = chunkIdx * PAGES_PER_CHUNK + 1;
         const endPage = Math.min(startPage + PAGES_PER_CHUNK - 1, totalPages);
 
-        setProgressLabel(`Extracting chunk ${chunkIdx + 1} / ${totalChunks} (pages ${startPage}–${endPage})…`);
-
-        // Render pages in this chunk
         const pages = await Promise.all(
           Array.from({ length: endPage - startPage + 1 }, (_, i) => startPage + i).map(
             async (pageNum) => ({
@@ -199,7 +212,7 @@ export default function UploadPage() {
           body: JSON.stringify({
             pages,
             schema,
-            category_context: categoryContext,
+            category_context: "",
             chunk_index: chunkIdx,
             total_chunks: totalChunks,
           }),
@@ -207,20 +220,40 @@ export default function UploadPage() {
 
         if (chunkRes.ok) {
           const chunkData = await chunkRes.json();
-          categoryContext = chunkData.category_context ?? categoryContext;
           addLog("extracting", `Chunk ${chunkIdx + 1}/${totalChunks}: ${chunkData.products_found} products`);
+          setChunkStatuses((prev) => {
+            const next = [...prev];
+            next[chunkIdx] = "done";
+            return next;
+          });
         } else {
           addLog("extracting", `Chunk ${chunkIdx + 1}/${totalChunks}: failed (skipping)`);
+          setChunkStatuses((prev) => {
+            const next = [...prev];
+            next[chunkIdx] = "failed";
+            return next;
+          });
         }
 
-        // Progress: 15% → 85% during extraction
-        setProgress(15 + Math.round(((chunkIdx + 1) / totalChunks) * 70));
+        completedChunks++;
+        setProgress(15 + Math.round((completedChunks / totalChunks) * 70));
+        setProgressLabel(`Extracted ${completedChunks} / ${totalChunks} chunks…`);
       }
+
+      // Run chunks with concurrency pool
+      const queue = Array.from({ length: totalChunks }, (_, i) => i);
+      const workers = Array.from({ length: Math.min(CONCURRENCY, totalChunks) }, async () => {
+        while (queue.length > 0) {
+          const idx = queue.shift()!;
+          await processChunk(idx);
+        }
+      });
+      await Promise.all(workers);
 
       // 4. Finalize
       setStage("finalizing");
-      setProgressLabel("Finalizing — inserting into database…");
-      addLog("inserting", "Finalizing: creating table, inserting products, building search index…");
+      setProgressLabel("Finalizing — building search index…");
+      addLog("indexing", "Building full-text search index…");
       setProgress(88);
 
       const finalRes = await fetch(`/api/catalogs/${catalog_id}/finalize`, { method: "POST" });
@@ -231,21 +264,22 @@ export default function UploadPage() {
       setProgress(100);
       setStage("done");
       setProgressLabel("Processing complete!");
+      toast.success("Catalog processed successfully!");
 
-      // Redirect after short delay
       setTimeout(() => router.push(`/catalog/${catalog_id}`), 1500);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setErrorMsg(msg);
       setStage("error");
       addLog("failed", `Error: ${msg}`);
+      toast.error("Processing failed");
     }
   }
 
   const isProcessing = ["reading", "schema", "extracting", "finalizing"].includes(stage);
 
   return (
-    <div className="p-8 max-w-3xl mx-auto">
+    <div className="p-6 md:p-8 max-w-3xl mx-auto">
       {/* Header */}
       <div className="mb-8">
         <h2 className="text-2xl font-bold text-slate-900">Upload Catalog</h2>
@@ -264,7 +298,7 @@ export default function UploadPage() {
           onClick={() => !file && inputRef.current?.click()}
           className={`relative border-2 border-dashed rounded-2xl p-12 text-center transition-all cursor-pointer ${
             isDragging
-              ? "border-indigo-400 bg-indigo-50"
+              ? "border-indigo-400 bg-indigo-50 scale-[1.01]"
               : file
               ? "border-emerald-300 bg-emerald-50"
               : "border-slate-200 bg-white hover:border-indigo-300 hover:bg-slate-50"
@@ -281,13 +315,13 @@ export default function UploadPage() {
           {file ? (
             <div className="flex flex-col items-center gap-3">
               <div className="w-12 h-12 rounded-xl bg-emerald-100 flex items-center justify-center">
-                <svg className="w-6 h-6 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-                </svg>
+                <Icon name="checkCircle" className="w-6 h-6 text-emerald-500" />
               </div>
               <div>
                 <p className="font-semibold text-slate-800">{file.name}</p>
-                <p className="text-sm text-slate-400 mt-0.5">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
+                <p className="text-sm text-slate-400 mt-0.5">
+                  {(file.size / 1024 / 1024).toFixed(2)} MB
+                </p>
               </div>
               <button
                 onClick={(e) => { e.stopPropagation(); setFile(null); }}
@@ -299,33 +333,33 @@ export default function UploadPage() {
           ) : (
             <div className="flex flex-col items-center gap-3">
               <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center">
-                <svg className="w-6 h-6 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" />
-                </svg>
+                <Icon name="upload" className="w-6 h-6 text-slate-400" />
               </div>
               <div>
                 <p className="font-semibold text-slate-700">Drop your PDF here</p>
                 <p className="text-sm text-slate-400 mt-0.5">or click to browse files</p>
               </div>
-              <p className="text-xs text-slate-300">PDF files only · Any size supported</p>
+              <p className="text-xs text-slate-300">PDF files only</p>
             </div>
           )}
         </div>
       )}
 
-      {/* Info cards (pre-processing) */}
+      {/* Feature cards */}
       {stage === "idle" && file && (
-        <div className="mt-4 grid grid-cols-3 gap-3">
+        <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
           {[
-            { icon: "🔍", title: "Schema Discovery", desc: "Claude infers column structure from sample pages" },
-            { icon: "⚡", title: "Chunked Extraction", desc: "5 pages per API call for reliability & speed" },
-            { icon: "🔎", title: "Full-Text Index", desc: "PostgreSQL tsvector for instant search" },
+            { icon: "search" as const, title: "Schema Discovery", desc: "Claude infers column structure from sample pages" },
+            { icon: "sparkle" as const, title: "Parallel Extraction", desc: `${CONCURRENCY} chunks processed concurrently for speed` },
+            { icon: "catalog" as const, title: "Full-Text Index", desc: "PostgreSQL tsvector for instant search" },
           ].map((c) => (
-            <div key={c.title} className="bg-white rounded-xl border border-slate-100 p-4">
-              <div className="text-xl mb-2">{c.icon}</div>
+            <Card key={c.title} className="p-4">
+              <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center mb-2">
+                <Icon name={c.icon} className="w-4 h-4 text-indigo-500" />
+              </div>
               <p className="text-xs font-semibold text-slate-700">{c.title}</p>
               <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">{c.desc}</p>
-            </div>
+            </Card>
           ))}
         </div>
       )}
@@ -333,13 +367,9 @@ export default function UploadPage() {
       {/* CTA */}
       {stage === "idle" && (
         <div className="mt-6">
-          <button
-            onClick={startProcessing}
-            disabled={!file}
-            className="w-full py-3 px-6 bg-indigo-500 text-white font-semibold rounded-xl hover:bg-indigo-600 disabled:opacity-40 disabled:cursor-not-allowed transition-all text-sm shadow-sm"
-          >
+          <Button onClick={startProcessing} disabled={!file} className="w-full py-3" size="lg">
             {file ? "Start AI Extraction" : "Select a PDF first"}
-          </button>
+          </Button>
         </div>
       )}
 
@@ -350,41 +380,39 @@ export default function UploadPage() {
           progress={progress}
           progressLabel={progressLabel}
           log={log}
+          chunkStatuses={chunkStatuses}
         />
       )}
 
       {/* Done */}
       {stage === "done" && (
-        <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-6 text-center">
+        <Card className="p-6 text-center bg-emerald-50 border-emerald-200">
           <div className="w-12 h-12 rounded-full bg-emerald-100 flex items-center justify-center mx-auto mb-3">
-            <svg className="w-6 h-6 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-            </svg>
+            <Icon name="checkCircle" className="w-6 h-6 text-emerald-500" />
           </div>
           <p className="font-semibold text-emerald-700">Processing complete!</p>
           <p className="text-sm text-emerald-600 mt-1">Redirecting to catalog view…</p>
-        </div>
+        </Card>
       )}
 
       {/* Error */}
       {stage === "error" && (
-        <div className="bg-red-50 border border-red-200 rounded-2xl p-6">
+        <Card className="p-6 bg-red-50 border-red-200">
           <div className="flex items-start gap-3">
-            <svg className="w-5 h-5 text-red-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
-            </svg>
+            <Icon name="warning" className="w-5 h-5 text-red-400 shrink-0 mt-0.5" strokeWidth={2} />
             <div className="flex-1">
               <p className="font-semibold text-red-700 text-sm">Processing failed</p>
               <p className="text-xs text-red-500 mt-1 break-words">{errorMsg}</p>
             </div>
           </div>
-          <button
-            onClick={() => { setStage("idle"); setLog([]); setProgress(0); }}
-            className="mt-4 w-full py-2 px-4 bg-white border border-red-200 text-red-600 text-sm font-medium rounded-lg hover:bg-red-50 transition-colors"
+          <Button
+            onClick={() => { setStage("idle"); setLog([]); setProgress(0); setChunkStatuses([]); }}
+            variant="destructive"
+            className="mt-4 w-full"
           >
             Try Again
-          </button>
-        </div>
+          </Button>
+        </Card>
       )}
     </div>
   );
@@ -396,11 +424,13 @@ function ProcessingView({
   progress,
   progressLabel,
   log,
+  chunkStatuses,
 }: {
   stage: Stage;
   progress: number;
   progressLabel: string;
   log: LogEntry[];
+  chunkStatuses: ("pending" | "running" | "done" | "failed")[];
 }) {
   const stages = [
     { key: "reading", label: "Load PDF" },
@@ -411,7 +441,7 @@ function ProcessingView({
   const activeIdx = stages.findIndex((s) => s.key === stage);
 
   return (
-    <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+    <Card className="overflow-hidden">
       {/* Stage steps */}
       <div className="px-6 pt-5 pb-4 border-b border-slate-100">
         <div className="flex items-center gap-0">
@@ -431,9 +461,7 @@ function ProcessingView({
                     }`}
                   >
                     {done ? (
-                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-                      </svg>
+                      <Icon name="check" className="w-3.5 h-3.5" strokeWidth={3} />
                     ) : (
                       i + 1
                     )}
@@ -465,8 +493,32 @@ function ProcessingView({
         </div>
       </div>
 
+      {/* Chunk status grid */}
+      {chunkStatuses.length > 0 && (
+        <div className="px-6 py-3 border-b border-slate-100">
+          <p className="text-xs font-medium text-slate-400 mb-2">Chunk progress</p>
+          <div className="flex flex-wrap gap-1">
+            {chunkStatuses.map((s, i) => (
+              <div
+                key={i}
+                title={`Chunk ${i + 1}: ${s}`}
+                className={`w-3 h-3 rounded-sm transition-all ${
+                  s === "done"
+                    ? "bg-emerald-400"
+                    : s === "running"
+                    ? "bg-indigo-400 animate-pulse"
+                    : s === "failed"
+                    ? "bg-red-400"
+                    : "bg-slate-200"
+                }`}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Log */}
-      <div className="px-6 py-4 max-h-60 overflow-y-auto space-y-1.5">
+      <div className="px-6 py-4 max-h-48 overflow-y-auto space-y-1.5">
         {log.length === 0 && (
           <p className="text-xs text-slate-300 italic">Waiting for logs…</p>
         )}
@@ -477,7 +529,7 @@ function ProcessingView({
           </div>
         ))}
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -490,15 +542,4 @@ function LogDot({ status }: { status: string }) {
     status === "indexing" ? "bg-indigo-400 animate-pulse" :
     "bg-slate-300";
   return <span className={`w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${color}`} />;
-}
-
-// ─── Utils ────────────────────────────────────────────────────────────────────
-function getSamplePageIndices(totalPages: number, count: number): number[] {
-  if (totalPages <= count) return Array.from({ length: totalPages }, (_, i) => i + 1);
-  const indices = new Set<number>([1, 2, totalPages]);
-  const step = Math.floor(totalPages / (count - 2));
-  for (let i = 1; indices.size < count && i * step <= totalPages; i++) {
-    indices.add(Math.min(i * step, totalPages));
-  }
-  return Array.from(indices).sort((a, b) => a - b).slice(0, count);
 }

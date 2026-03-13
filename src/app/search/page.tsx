@@ -3,6 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import type { SearchResultItem } from "@/lib/types";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Icon } from "@/components/ui/icon";
+import { Skeleton } from "@/components/ui/skeleton";
+import { toast } from "sonner";
 
 const SUGGESTED_QUERIES = [
   "wall hung EWC under 20000",
@@ -24,7 +29,6 @@ export default function SearchPage() {
   const [submitted, setSubmitted] = useState("");
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState<SearchResponse | null>(null);
-  const [error, setError] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -38,7 +42,6 @@ export default function SearchPage() {
 
     setSubmitted(searchQuery);
     setLoading(true);
-    setError("");
     setResponse(null);
     setExpandedId(null);
 
@@ -57,7 +60,7 @@ export default function SearchPage() {
       const data: SearchResponse = await res.json();
       setResponse(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toast.error(err instanceof Error ? err.message : "Search failed");
     } finally {
       setLoading(false);
     }
@@ -68,7 +71,7 @@ export default function SearchPage() {
     : [];
 
   return (
-    <div className="p-8 max-w-4xl mx-auto">
+    <div className="p-6 md:p-8 max-w-4xl mx-auto">
       {/* Header */}
       <div className="mb-8">
         <h2 className="text-2xl font-bold text-slate-900">Search Products</h2>
@@ -86,9 +89,7 @@ export default function SearchPage() {
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
             </svg>
           ) : (
-            <svg className="w-5 h-5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
-            </svg>
+            <Icon name="search" className="w-5 h-5 text-slate-400" />
           )}
         </div>
         <input
@@ -98,15 +99,13 @@ export default function SearchPage() {
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && handleSearch()}
           placeholder="e.g. rimless wall hung EWC under 20000"
-          className="w-full pl-12 pr-4 py-4 bg-white border border-slate-200 rounded-2xl text-slate-800 placeholder-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-transparent shadow-sm"
+          className="w-full pl-12 pr-4 py-4 bg-white border border-slate-200 rounded-2xl text-slate-800 placeholder-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-transparent shadow-sm transition-shadow"
         />
-        <button
-          onClick={() => handleSearch()}
-          disabled={!query.trim() || loading}
-          className="absolute right-3 inset-y-3 px-4 bg-indigo-500 text-white text-sm font-semibold rounded-xl hover:bg-indigo-600 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-        >
-          Search
-        </button>
+        <div className="absolute right-3 inset-y-3">
+          <Button onClick={() => handleSearch()} disabled={!query.trim() || loading} size="sm" className="h-full px-4">
+            Search
+          </Button>
+        </div>
       </div>
 
       {/* Suggested queries */}
@@ -129,7 +128,10 @@ export default function SearchPage() {
       {response && activeFilters.length > 0 && (
         <div className="mb-5">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs text-slate-400">AI parsed:</span>
+            <span className="text-xs text-slate-400 flex items-center gap-1">
+              <Icon name="sparkle" className="w-3.5 h-3.5 text-indigo-400" />
+              AI parsed:
+            </span>
             {activeFilters.map(([key, val]) => (
               <FilterChip key={key} label={key} value={val} />
             ))}
@@ -137,18 +139,25 @@ export default function SearchPage() {
         </div>
       )}
 
-      {/* Error */}
-      {error && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-5 flex items-start gap-3">
-          <svg className="w-4 h-4 text-red-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
-          </svg>
-          <p className="text-sm text-red-600">{error}</p>
+      {/* Loading skeleton */}
+      {loading && (
+        <div className="space-y-3">
+          {[...Array(3)].map((_, i) => (
+            <Card key={i} className="p-5">
+              <div className="flex items-center gap-2 mb-3">
+                <Skeleton className="h-4 w-20 rounded-full" />
+                <Skeleton className="h-4 w-16 rounded-full" />
+              </div>
+              <Skeleton className="h-5 w-3/4 mb-2" />
+              <Skeleton className="h-3 w-full" />
+              <Skeleton className="h-3 w-2/3 mt-1" />
+            </Card>
+          ))}
         </div>
       )}
 
       {/* Results */}
-      {response && (
+      {response && !loading && (
         <div>
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-semibold text-slate-700">
@@ -176,9 +185,7 @@ export default function SearchPage() {
       )}
 
       {/* Empty state */}
-      {!submitted && !loading && (
-        <EmptyState />
-      )}
+      {!submitted && !loading && <EmptyState />}
     </div>
   );
 }
@@ -186,9 +193,7 @@ export default function SearchPage() {
 // ─── Filter Chip ──────────────────────────────────────────────────────────────
 function FilterChip({ label, value }: { label: string; value: unknown }) {
   const displayVal =
-    typeof value === "object" && value !== null
-      ? JSON.stringify(value)
-      : String(value);
+    typeof value === "object" && value !== null ? JSON.stringify(value) : String(value);
 
   const colorMap: Record<string, string> = {
     keywords: "bg-indigo-50 text-indigo-600 ring-indigo-200",
@@ -222,11 +227,10 @@ function ResultCard({
   const rawData = item.raw_data as Record<string, unknown> | undefined;
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 overflow-hidden hover:border-slate-300 transition-all">
+    <Card className="overflow-hidden" hover>
       <button onClick={onToggle} className="w-full text-left p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
-            {/* Catalog badge */}
             <div className="flex items-center gap-2 mb-2">
               <span className="text-xs text-slate-400 bg-slate-50 border border-slate-100 px-2 py-0.5 rounded-full">
                 {item.catalog_name ?? item.catalog_id}
@@ -241,7 +245,9 @@ function ResultCard({
               )}
             </div>
 
-            <h4 className="font-semibold text-slate-900 text-sm leading-tight">{item.product_name ?? "Unnamed product"}</h4>
+            <h4 className="font-semibold text-slate-900 text-sm leading-tight">
+              {item.product_name ?? "Unnamed product"}
+            </h4>
 
             {item.description && (
               <p className="text-xs text-slate-500 mt-1 line-clamp-2">{item.description}</p>
@@ -252,24 +258,19 @@ function ResultCard({
             {item.price != null && (
               <div className="text-right">
                 <p className="text-lg font-bold text-slate-900">
-                  ₹{Number(item.price).toLocaleString("en-IN")}
+                  &#x20B9;{Number(item.price).toLocaleString("en-IN")}
                 </p>
               </div>
             )}
-            <svg
+            <Icon
+              name="chevronDown"
               className={`w-4 h-4 text-slate-400 transition-transform ${expanded ? "rotate-180" : ""}`}
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
               strokeWidth={2}
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
-            </svg>
+            />
           </div>
         </div>
       </button>
 
-      {/* Expanded raw data */}
       {expanded && rawData && (
         <div className="border-t border-slate-100 px-5 pb-5 pt-4">
           <p className="text-xs font-semibold text-slate-400 mb-3">Full product details</p>
@@ -289,13 +290,13 @@ function ResultCard({
                 href={`/catalog/${item.catalog_id}`}
                 className="text-xs text-indigo-500 hover:text-indigo-700 font-medium"
               >
-                View full catalog →
+                View full catalog &rarr;
               </Link>
             </div>
           )}
         </div>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -304,9 +305,7 @@ function EmptyState() {
   return (
     <div className="flex flex-col items-center justify-center py-16 text-center">
       <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center mb-4">
-        <svg className="w-7 h-7 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
-        </svg>
+        <Icon name="search" className="w-7 h-7 text-slate-300" />
       </div>
       <p className="text-sm font-medium text-slate-500">Search across all your product catalogs</p>
       <p className="text-xs text-slate-400 mt-1">Claude will parse your natural language query into structured filters</p>
@@ -316,14 +315,12 @@ function EmptyState() {
 
 function NoResults({ query }: { query: string }) {
   return (
-    <div className="flex flex-col items-center justify-center py-12 text-center bg-white rounded-xl border border-slate-200">
-      <div className="w-12 h-12 rounded-2xl bg-slate-50 flex items-center justify-center mb-3">
-        <svg className="w-6 h-6 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M15.182 16.318A4.486 4.486 0 0 0 12.016 15a4.486 4.486 0 0 0-3.198 1.318M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM9.75 9.75c0 .414-.168.75-.375.75S9 10.164 9 9.75 9.168 9 9.375 9s.375.336.375.75Zm-.375 0h.008v.015h-.008V9.75Zm5.625 0c0 .414-.168.75-.375.75s-.375-.336-.375-.75.168-.75.375-.75.375.336.375.75Zm-.375 0h.008v.015h-.008V9.75Z" />
-        </svg>
+    <Card className="p-8 text-center">
+      <div className="w-12 h-12 rounded-2xl bg-slate-50 flex items-center justify-center mx-auto mb-3">
+        <Icon name="noResults" className="w-6 h-6 text-slate-300" />
       </div>
       <p className="text-sm font-semibold text-slate-600">No products found for &ldquo;{query}&rdquo;</p>
       <p className="text-xs text-slate-400 mt-1">Try different keywords or a broader search term</p>
-    </div>
+    </Card>
   );
 }

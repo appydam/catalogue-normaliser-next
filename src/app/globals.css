@@ -1,15 +1,28 @@
 @import "tailwindcss";
 
 :root {
+  /* Surface */
   --background: #f8fafc;
   --foreground: #0f172a;
-  --sidebar-bg: #ffffff;
-  --card-bg: #ffffff;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --muted: #f1f5f9;
+  --muted-foreground: #64748b;
   --border: #e2e8f0;
-  --muted: #64748b;
+  --ring: #6366f1;
+
+  /* Primary */
   --primary: #6366f1;
   --primary-hover: #4f46e5;
   --primary-light: #eef2ff;
+  --primary-foreground: #ffffff;
+
+  /* Destructive */
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+
+  /* Sidebar */
+  --sidebar-width: 16rem;
 }
 
 @theme inline {
@@ -17,6 +30,19 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  /* Animations for Radix */
+  --animate-in: enter 200ms ease-out;
+  --animate-out: exit 150ms ease-in;
+
+  @keyframes enter {
+    from { opacity: 0; transform: scale(0.95) translateY(4px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
+  }
+  @keyframes exit {
+    from { opacity: 1; transform: scale(1) translateY(0); }
+    to { opacity: 0; transform: scale(0.95) translateY(4px); }
+  }
 }
 
 body {
@@ -31,3 +57,7 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* Radix animation utilities */
+[data-state="open"] { animation: enter 200ms ease-out; }
+[data-state="closed"] { animation: exit 150ms ease-in; }

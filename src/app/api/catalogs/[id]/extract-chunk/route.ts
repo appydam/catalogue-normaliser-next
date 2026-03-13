@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getClaudeClient, CLAUDE_MODEL, repairTruncatedJsonArray, buildPageContentBlocks } from "@/lib/claude";
 import { getSupabase } from "@/lib/supabase";
+import { insertProducts } from "@/lib/data-inserter";
+import { indexProductsBatch } from "@/lib/indexer";
 import type { PageData, ColumnDefinition } from "@/lib/types";
 
 export const maxDuration = 300;
@@ -84,18 +86,24 @@ IMPORTANT RULES:
     const rawText = (response.content[0] as { type: string; text: string }).text;
     const products = repairTruncatedJsonArray(rawText) as Record<string, unknown>[];
 
-    // Accumulate products in the catalog's extracted_products JSONB column
-    const { data: current } = await sb
+    // Fetch table_name from catalog (table was created eagerly in POST /api/catalogs)
+    const { data: catalog } = await sb
       .from("catalogs")
-      .select("extracted_products")
+      .select("table_name, schema_definition")
       .eq("id", catalogId)
       .single();
 
-    const existing = (current?.extracted_products as unknown[]) ?? [];
-    await sb
-      .from("catalogs")
-      .update({ extracted_products: [...existing, ...products] })
-      .eq("id", catalogId);
+    if (!catalog) {
+      return NextResponse.json({ error: "Catalog not found" }, { status: 404 });
+    }
+
+    const columns = (catalog.schema_definition as { columns: ColumnDefinition[] }).columns;
+
+    // Insert products directly into the dynamic table (no JSONB accumulation)
+    const inserted = await insertProducts(catalog.table_name, catalogId, products, columns);
+
+    // Index products for search (without tsvector — that happens at finalize)
+    await indexProductsBatch(catalogId, catalog.table_name, products);
 
     // Derive category context from last product for next chunk
     const lastProduct = products.at(-1) as Record<string, unknown> | undefined;
@@ -108,7 +116,7 @@ IMPORTANT RULES:
     await appendLog(
       catalogId,
       "extracting",
-      `Chunk ${body.chunk_index + 1}/${body.total_chunks} done: ${products.length} products extracted`
+      `Chunk ${body.chunk_index + 1}/${body.total_chunks} done: ${inserted} products inserted`
     );
 
     return NextResponse.json({

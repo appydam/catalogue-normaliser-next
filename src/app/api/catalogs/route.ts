@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabase } from "@/lib/supabase";
-import { sanitizeTableName } from "@/lib/schema-manager";
+import { sanitizeTableName, createDynamicTable } from "@/lib/schema-manager";
 import type { SchemaDiscovery } from "@/lib/types";
 
 // GET /api/catalogs — list all catalogs
@@ -9,7 +9,7 @@ export async function GET() {
   const { data, error } = await sb
     .from("catalogs")
     .select(
-      "id, company_name, catalog_name, file_name, total_products, processing_status, processing_log, created_at"
+      "id, company_name, catalog_name, file_name, total_products, processing_status, processing_log, error_message, created_at"
     )
     .order("created_at", { ascending: false });
 
@@ -17,7 +17,7 @@ export async function GET() {
   return NextResponse.json(data ?? []);
 }
 
-// POST /api/catalogs — create a new catalog record after schema discovery
+// POST /api/catalogs — create catalog record + dynamic table eagerly
 export async function POST(req: NextRequest) {
   const body = (await req.json()) as {
     file_name: string;
@@ -31,6 +31,7 @@ export async function POST(req: NextRequest) {
     body.schema.catalog_name
   );
 
+  // Insert catalog record
   const { data, error } = await sb
     .from("catalogs")
     .insert({
@@ -48,11 +49,23 @@ export async function POST(req: NextRequest) {
           message: `Schema discovered: ${body.schema.columns.length} columns, ${body.schema.categories.length} categories. Starting extraction of ${body.total_pages} pages...`,
         },
       ],
-      extracted_products: [],
     })
     .select("id, table_name")
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  // Create the dynamic table eagerly so extract-chunk can insert directly
+  try {
+    await createDynamicTable(tableName, body.schema.columns);
+  } catch (tableErr) {
+    // Clean up: delete the catalog row if table creation failed
+    await sb.from("catalogs").delete().eq("id", data.id);
+    return NextResponse.json(
+      { error: `Table creation failed: ${String(tableErr)}` },
+      { status: 500 }
+    );
+  }
+
   return NextResponse.json({ catalog_id: data.id, table_name: tableName });
 }

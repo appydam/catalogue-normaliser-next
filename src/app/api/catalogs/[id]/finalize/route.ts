@@ -1,11 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabase } from "@/lib/supabase";
-import { createDynamicTable } from "@/lib/schema-manager";
-import { insertProducts } from "@/lib/data-inserter";
-import { indexProducts } from "@/lib/indexer";
-import type { ColumnDefinition } from "@/lib/types";
+import { buildSearchIndex } from "@/lib/indexer";
 
-export const maxDuration = 300;
+export const maxDuration = 60; // Much faster now — just tsvector + status update
 
 async function appendLog(catalogId: string, status: string, message: string) {
   const sb = getSupabase();
@@ -29,7 +26,7 @@ export async function POST(
   try {
     const { data: catalog, error } = await sb
       .from("catalogs")
-      .select("table_name, schema_definition, extracted_products, company_name, catalog_name")
+      .select("table_name")
       .eq("id", catalogId)
       .single();
 
@@ -37,22 +34,19 @@ export async function POST(
       return NextResponse.json({ error: "Catalog not found" }, { status: 404 });
     }
 
-    const columns = (catalog.schema_definition as { columns: ColumnDefinition[] }).columns;
-    const products = (catalog.extracted_products as Record<string, unknown>[]) ?? [];
-    const { table_name: tableName } = catalog;
+    // Count products already inserted by extract-chunk calls
+    const { count } = await sb
+      .from(catalog.table_name)
+      .select("*", { count: "exact", head: true })
+      .eq("catalog_id", catalogId);
 
-    await appendLog(catalogId, "inserting", `Creating dynamic table '${tableName}'...`);
-    await createDynamicTable(tableName, columns);
+    const totalProducts = count ?? 0;
 
-    await appendLog(catalogId, "inserting", `Inserting ${products.length} products...`);
-    const inserted = await insertProducts(tableName, catalogId, products, columns);
-    await appendLog(catalogId, "inserting", `Inserted ${inserted} products into '${tableName}'`);
+    // Build tsvector search index for all un-indexed rows
+    await appendLog(catalogId, "indexing", `Building full-text search index for ${totalProducts} products...`);
+    await buildSearchIndex(catalogId);
 
-    await appendLog(catalogId, "indexing", "Building full-text search index...");
-    const indexed = await indexProducts(catalogId, tableName, products);
-    await appendLog(catalogId, "indexing", `Indexed ${indexed} products for search`);
-
-    // Mark complete and clear temp storage
+    // Mark complete
     const { data: finalData } = await sb
       .from("catalogs")
       .select("processing_log")
@@ -62,20 +56,20 @@ export async function POST(
     finalLog.push({
       timestamp: new Date().toISOString(),
       status: "completed",
-      message: `Processing complete: ${inserted} products extracted and indexed`,
+      message: `Processing complete: ${totalProducts} products extracted and indexed`,
     });
 
     await sb
       .from("catalogs")
       .update({
         processing_status: "completed",
-        total_products: inserted,
+        total_products: totalProducts,
         extracted_products: null,
         processing_log: finalLog,
       })
       .eq("id", catalogId);
 
-    return NextResponse.json({ inserted, indexed });
+    return NextResponse.json({ inserted: totalProducts, indexed: totalProducts });
   } catch (err) {
     console.error("Finalize error:", err);
     await appendLog(catalogId, "failed", `Finalize failed: ${String(err).slice(0, 200)}`);
