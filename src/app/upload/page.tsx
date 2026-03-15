@@ -23,6 +23,7 @@ type Stage =
   | "extracting"
   | "finalizing"
   | "done"
+  | "done_with_warnings"
   | "error";
 
 interface FingerprintMatch {
@@ -37,12 +38,16 @@ interface FingerprintMatch {
   processing_status: string;
 }
 
+import { classifyPage, classifyCatalog, getSkippablePages, getExtractablePages } from "@/lib/catalog-classifier";
+import type { CatalogType, PageClassification, CatalogClassification } from "@/lib/catalog-classifier";
+
 // ─── Constants ────────────────────────────────────────────────────────────────
-const PAGES_PER_CHUNK = 5;
 const SAMPLE_PAGE_COUNT = 8;
-const RENDER_SCALE = 150 / 72; // 150 DPI — full quality; images go to S3, not inline in payloads
-const CONCURRENCY = 3;
-const MATCH_THRESHOLD = 70; // Minimum confidence to show match dialog
+const RENDER_SCALE = 150 / 72; // 150 DPI
+const CONCURRENCY = 4;
+const MATCH_THRESHOLD = 70;
+const MAX_RETRIES = 3;
+const RETRY_DELAYS = [1000, 3000, 9000]; // exponential backoff
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -68,17 +73,32 @@ async function renderPageToBase64(pdfDoc: PdfDocument, pageNum: number): Promise
 }
 
 /**
- * Upload a page image to S3 via the server endpoint and return the public URL.
+ * P1-4: Upload with retry (1 retry with 1s delay before giving up).
  */
-async function uploadPageImageToS3(s3Key: string, base64: string): Promise<string> {
-  const res = await fetch("/api/upload-page-image", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ key: s3Key, image_base64: base64, content_type: "image/png" }),
-  });
-  if (!res.ok) throw new Error(`S3 upload failed: ${res.status}`);
-  const { url } = await res.json();
-  return url;
+async function uploadPageImageToS3(s3Key: string, base64: string): Promise<string | null> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30000); // increased to 30s
+      const res = await fetch("/api/upload-page-image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: s3Key, image_base64: base64, content_type: "image/png" }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      if (!res.ok) {
+        if (attempt === 0) { await new Promise((r) => setTimeout(r, 1000)); continue; }
+        return null;
+      }
+      const { url } = await res.json();
+      return url;
+    } catch {
+      if (attempt === 0) { await new Promise((r) => setTimeout(r, 1000)); continue; }
+      return null;
+    }
+  }
+  return null;
 }
 
 async function extractPageText(pdfDoc: PdfDocument, pageNum: number): Promise<string> {
@@ -121,6 +141,13 @@ async function computeContentHash(texts: string[]): Promise<string> {
   return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+// Catalog classification is now handled by @/lib/catalog-classifier
+// imported at top of file
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function UploadPage() {
   const router = useRouter();
@@ -136,7 +163,11 @@ export default function UploadPage() {
   const [log, setLog] = useState<LogEntry[]>([]);
   const [catalogId, setCatalogId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>("");
-  const [chunkStatuses, setChunkStatuses] = useState<("pending" | "running" | "done" | "failed")[]>([]);
+  const [warningMsg, setWarningMsg] = useState<string>("");
+  const [chunkStatuses, setChunkStatuses] = useState<("pending" | "running" | "done" | "failed" | "truncated")[]>([]);
+
+  // Classification state
+  const [catalogClassification, setCatalogClassification] = useState<CatalogClassification | null>(null);
 
   // Fingerprint state
   const [matchDialogOpen, setMatchDialogOpen] = useState(false);
@@ -181,15 +212,14 @@ export default function UploadPage() {
     setLog([]);
     setProgress(0);
     setErrorMsg("");
+    setWarningMsg("");
     addLog("fingerprinting", "Computing PDF fingerprint...");
     setProgressLabel("Checking for duplicates...");
 
     try {
-      // Compute file hash
       const fileHash = await computeFileHash(file);
       setProgress(2);
 
-      // Load PDF and extract text from first 3 pages for content hash
       const pdfjs = await loadPdfJs();
       const arrayBuffer = await file.arrayBuffer();
       const pdfDoc = await pdfjs.getDocument({ data: arrayBuffer }).promise;
@@ -216,7 +246,6 @@ export default function UploadPage() {
 
       addLog("fingerprinting", "Checking for existing catalogs...");
 
-      // Check server for matches
       const res = await fetch("/api/fingerprint/check", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -231,7 +260,6 @@ export default function UploadPage() {
       });
 
       if (!res.ok) {
-        // Non-critical — proceed without fingerprint check
         addLog("fingerprinting", "Fingerprint check unavailable, proceeding with processing...");
         return false;
       }
@@ -242,13 +270,12 @@ export default function UploadPage() {
         setBestMatch(best_match);
         setMatchDialogOpen(true);
         setStage("idle");
-        return true; // Match found — show dialog, don't start processing
+        return true;
       }
 
       addLog("fingerprinting", "No existing match found — proceeding with new processing.");
       return false;
     } catch {
-      // Fingerprint check failure is non-critical
       addLog("fingerprinting", "Fingerprint check failed, proceeding...");
       return false;
     }
@@ -308,9 +335,10 @@ export default function UploadPage() {
     if (!file) return;
     abortRef.current = false;
     setStage("reading");
-    setLog((prev) => prev.filter((l) => l.status === "fingerprinting")); // Keep fingerprint logs
+    setLog((prev) => prev.filter((l) => l.status === "fingerprinting"));
     setProgress(5);
     setErrorMsg("");
+    setWarningMsg("");
     setCatalogId(null);
     setChunkStatuses([]);
 
@@ -327,23 +355,33 @@ export default function UploadPage() {
       addLog("reading", `PDF loaded: ${totalPages} pages`);
       setProgress(5);
 
-      // 2. Render sample pages, upload to S3, then send URLs for schema discovery
+      // 2. Render sample pages for schema discovery
       setStage("schema");
       setProgressLabel("Rendering & uploading sample pages...");
       addLog("schema", "Rendering sample pages for schema discovery...");
 
       const sampleIndices = getSamplePageIndices(totalPages, SAMPLE_PAGE_COUNT);
 
-      // Render and upload sample pages to S3 in parallel
-      const samplePages = await Promise.all(
-        sampleIndices.map(async (pageNum) => {
-          const base64 = await renderPageToBase64(pdfDoc, pageNum);
-          const text = await extractPageText(pdfDoc, pageNum);
-          const s3Key = `temp-schema/${Date.now()}/page-${pageNum}.png`;
-          const imageUrl = await uploadPageImageToS3(s3Key, base64);
-          return { page_number: pageNum, image_url: imageUrl, text };
-        })
-      );
+      const samplePages: { page_number: number; image_base64: string; text: string }[] = [];
+      const sampleClassifications: PageClassification[] = [];
+      for (const pageNum of sampleIndices) {
+        const base64 = await renderPageToBase64(pdfDoc, pageNum);
+        const text = await extractPageText(pdfDoc, pageNum);
+        samplePages.push({ page_number: pageNum, image_base64: base64, text });
+        sampleClassifications.push(classifyPage(pageNum, text, totalPages));
+      }
+
+      // Classify catalog type and determine chunk sizing
+      const classification = classifyCatalog(sampleClassifications);
+      setCatalogClassification(classification);
+      const pagesPerChunk = classification.pages_per_chunk;
+
+      addLog("schema", `Catalog type: ${classification.catalog_type} (${Math.round(classification.confidence * 100)}% confidence)`);
+      if (pagesPerChunk === 1) {
+        addLog("schema", `Dense catalog detected — using 1 page per chunk for accuracy`);
+      } else if (pagesPerChunk === 3) {
+        addLog("schema", `Light image catalog — using 3 pages per chunk for speed`);
+      }
 
       setProgress(10);
       addLog("schema", `Sending ${samplePages.length} sample pages to Claude for schema discovery...`);
@@ -351,15 +389,19 @@ export default function UploadPage() {
       const schemaRes = await fetch("/api/catalogs/schema", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pages: samplePages }),
+        body: JSON.stringify({ pages: samplePages, total_pages: totalPages }),
       });
 
       if (!schemaRes.ok) throw new Error(`Schema discovery failed: ${await schemaRes.text()}`);
-      const schema = await schemaRes.json();
+      const schemaResponse = await schemaRes.json();
+
+      // Server may return classification from schema route — use it if available
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { classification: _serverClassification, ...schema } = schemaResponse;
 
       addLog("schema", `Schema discovered: ${schema.columns.length} columns for "${schema.company_name}"`);
 
-      // Create catalog record (with fingerprint + version info)
+      // Create catalog record
       const catalogPayload: Record<string, unknown> = {
         file_name: file.name,
         schema,
@@ -388,16 +430,72 @@ export default function UploadPage() {
       setCatalogId(catalog_id);
       setProgress(15);
 
-      // 3. Parallel chunk extraction
+      // 3. Build page list with intelligent page classification
       setStage("extracting");
-      const totalChunks = Math.ceil(totalPages / PAGES_PER_CHUNK);
-      addLog("extracting", `Extracting ${totalPages} pages in ${totalChunks} chunks (${CONCURRENCY} concurrent)...`);
+
+      // Classify ALL pages — for pages we have text, use full classification; others default to "product"
+      const allPageTexts = new Map<number, string>();
+      const allPageClassifications = new Map<number, PageClassification>();
+      for (const sp of samplePages) {
+        allPageTexts.set(sp.page_number, sp.text);
+      }
+      for (const pc of sampleClassifications) {
+        allPageClassifications.set(pc.page_number, pc);
+      }
+
+      // For non-sampled pages, classify by extracting text (quick)
+      for (let p = 1; p <= totalPages; p++) {
+        if (!allPageTexts.has(p)) {
+          try {
+            const text = await extractPageText(pdfDoc, p);
+            allPageTexts.set(p, text);
+            allPageClassifications.set(p, classifyPage(p, text, totalPages));
+          } catch {
+            // If text extraction fails, assume product page
+          }
+        }
+      }
+
+      // Determine skippable pages
+      const allClassifications = Array.from(allPageClassifications.values());
+      const skippedPages = getSkippablePages(allClassifications);
+      const pagesToProcess = getExtractablePages(allClassifications);
+
+      // For pages without classification, include them
+      for (let p = 1; p <= totalPages; p++) {
+        if (!allPageClassifications.has(p) && !pagesToProcess.includes(p)) {
+          pagesToProcess.push(p);
+        }
+      }
+      pagesToProcess.sort((a, b) => a - b);
+
+      if (skippedPages.length > 0) {
+        const skippedDetail = skippedPages.map((p) => {
+          const pc = allPageClassifications.get(p);
+          return `${p}(${pc?.page_type ?? "unknown"})`;
+        }).join(", ");
+        addLog("extracting", `Skipping ${skippedPages.length} non-content pages: ${skippedDetail}`);
+      }
+
+      // Build chunks from processable pages
+      const chunks: number[][] = [];
+      for (let i = 0; i < pagesToProcess.length; i += pagesPerChunk) {
+        chunks.push(pagesToProcess.slice(i, i + pagesPerChunk));
+      }
+
+      const totalChunks = chunks.length;
+      addLog("extracting", `Extracting ${pagesToProcess.length} pages in ${totalChunks} chunks (${CONCURRENCY} concurrent)...`);
 
       setChunkStatuses(Array(totalChunks).fill("pending"));
 
       let completedChunks = 0;
+      let failedChunkCount = 0;
+      let truncatedChunkCount = 0;
+      let reextractedPageCount = 0;
+      let filteredProductCount = 0;
 
-      async function processChunk(chunkIdx: number) {
+      // P0-2: Process chunk with retry and exponential backoff
+      async function processChunkWithRetry(chunkIdx: number, pageNums: number[]) {
         if (abortRef.current) return;
 
         setChunkStatuses((prev) => {
@@ -406,49 +504,168 @@ export default function UploadPage() {
           return next;
         });
 
-        const startPage = chunkIdx * PAGES_PER_CHUNK + 1;
-        const endPage = Math.min(startPage + PAGES_PER_CHUNK - 1, totalPages);
-
-        // Render pages, upload to S3, then send only URLs to extract-chunk
-        const pages = await Promise.all(
-          Array.from({ length: endPage - startPage + 1 }, (_, i) => startPage + i).map(
-            async (pageNum) => {
+        for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+          try {
+            // Render pages
+            const pages: { page_number: number; image_url?: string; image_base64?: string; text: string }[] = [];
+            for (const pageNum of pageNums) {
               const base64 = await renderPageToBase64(pdfDoc, pageNum);
               const text = await extractPageText(pdfDoc, pageNum);
               const s3Key = `catalogs/${catalog_id}/pages/page-${pageNum}.png`;
               const imageUrl = await uploadPageImageToS3(s3Key, base64);
-              return { page_number: pageNum, image_url: imageUrl, text };
+              if (imageUrl) {
+                pages.push({ page_number: pageNum, image_url: imageUrl, text });
+              } else {
+                pages.push({ page_number: pageNum, image_base64: base64, text });
+              }
             }
-          )
-        );
 
-        const chunkRes = await fetch(`/api/catalogs/${catalog_id}/extract-chunk`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            pages,
-            schema,
-            category_context: "",
-            chunk_index: chunkIdx,
-            total_chunks: totalChunks,
-          }),
-        });
+            // P0-3: Build category context from the page immediately before this chunk
+            const firstPageNum = pageNums[0];
+            let precedingPageText = "";
+            if (firstPageNum > 1) {
+              const prevPageNum = firstPageNum - 1;
+              if (allPageTexts.has(prevPageNum)) {
+                precedingPageText = allPageTexts.get(prevPageNum)!.slice(0, 500);
+              } else {
+                try {
+                  const text = await extractPageText(pdfDoc, prevPageNum);
+                  allPageTexts.set(prevPageNum, text);
+                  precedingPageText = text.slice(0, 500);
+                } catch {
+                  // Non-critical
+                }
+              }
+            }
 
-        if (chunkRes.ok) {
-          const chunkData = await chunkRes.json();
-          addLog("extracting", `Chunk ${chunkIdx + 1}/${totalChunks}: ${chunkData.products_found} products`);
-          setChunkStatuses((prev) => {
-            const next = [...prev];
-            next[chunkIdx] = "done";
-            return next;
-          });
-        } else {
-          addLog("extracting", `Chunk ${chunkIdx + 1}/${totalChunks}: failed (skipping)`);
-          setChunkStatuses((prev) => {
-            const next = [...prev];
-            next[chunkIdx] = "failed";
-            return next;
-          });
+            // Gather page classifications for this chunk
+            const chunkPageClassifications = pageNums
+              .map((pn) => allPageClassifications.get(pn))
+              .filter((pc): pc is PageClassification => pc != null);
+
+            const chunkRes = await fetch(`/api/catalogs/${catalog_id}/extract-chunk`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                pages,
+                schema,
+                category_context: precedingPageText
+                  ? `[Text from preceding page ${firstPageNum - 1}]: ${precedingPageText}`
+                  : "",
+                chunk_index: chunkIdx,
+                total_chunks: totalChunks,
+                catalog_type: classification.catalog_type,
+                page_classifications: chunkPageClassifications,
+              }),
+            });
+
+            if (chunkRes.ok) {
+              const chunkData = await chunkRes.json();
+              const qualityLabel = chunkData.quality === "poor" ? " [LOW QUALITY]" : chunkData.quality === "acceptable" ? " [OK]" : "";
+              filteredProductCount += chunkData.products_filtered ?? 0;
+              const filteredLabel = chunkData.products_filtered > 0 ? `, ${chunkData.products_filtered} filtered` : "";
+              addLog("extracting", `Chunk ${chunkIdx + 1}/${totalChunks}: ${chunkData.products_found} products${filteredLabel}${qualityLabel}`);
+
+              // Re-extract pages flagged for re-extraction (low product count vs expected)
+              if (chunkData.pages_needing_reextraction?.length > 0 && !chunkData.truncated) {
+                reextractedPageCount += chunkData.pages_needing_reextraction.length;
+                addLog("extracting", `Re-extracting ${chunkData.pages_needing_reextraction.length} pages with low product coverage...`);
+                for (const reextractPage of chunkData.pages_needing_reextraction) {
+                  const singlePages = pages.filter((p) => p.page_number === reextractPage);
+                  if (singlePages.length === 0) continue;
+                  const reextractRes = await fetch(`/api/catalogs/${catalog_id}/extract-chunk`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      pages: singlePages,
+                      schema,
+                      category_context: "",
+                      chunk_index: chunkIdx,
+                      total_chunks: totalChunks,
+                      catalog_type: classification.catalog_type,
+                      page_classifications: chunkPageClassifications.filter((pc) => pc.page_number === reextractPage),
+                    }),
+                  });
+                  if (reextractRes.ok) {
+                    const reData = await reextractRes.json();
+                    addLog("extracting", `  Page ${reextractPage} re-extracted: ${reData.products_found} products`);
+                  }
+                }
+              }
+
+              // P0-1: Handle truncation — split and retry with 1 page each
+              if (chunkData.truncated && pageNums.length > 1) {
+                truncatedChunkCount++;
+                addLog("extracting", `Chunk ${chunkIdx + 1} was truncated — re-extracting pages individually...`);
+                for (const singlePage of pageNums) {
+                  const singlePages = pages.filter((p) => p.page_number === singlePage);
+                  const singleRes = await fetch(`/api/catalogs/${catalog_id}/extract-chunk`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      pages: singlePages,
+                      schema,
+                      category_context: "",
+                      chunk_index: chunkIdx,
+                      total_chunks: totalChunks,
+                    }),
+                  });
+                  if (singleRes.ok) {
+                    const singleData = await singleRes.json();
+                    addLog("extracting", `  Page ${singlePage}: ${singleData.products_found} products (re-extracted)`);
+                  }
+                }
+                setChunkStatuses((prev) => {
+                  const next = [...prev];
+                  next[chunkIdx] = "done";
+                  return next;
+                });
+              } else {
+                if (chunkData.truncated) truncatedChunkCount++;
+                setChunkStatuses((prev) => {
+                  const next = [...prev];
+                  next[chunkIdx] = chunkData.truncated ? "truncated" : "done";
+                  return next;
+                });
+              }
+
+              // Cache extracted text for context
+              for (const page of pages) {
+                if (page.page_number && !allPageTexts.has(page.page_number)) {
+                  const text = pages.find((p) => p.page_number === page.page_number);
+                  if (text?.text) allPageTexts.set(page.page_number, text.text);
+                }
+              }
+
+              break; // Success — exit retry loop
+            } else {
+              if (attempt < MAX_RETRIES - 1) {
+                addLog("extracting", `Chunk ${chunkIdx + 1} failed (attempt ${attempt + 1}/${MAX_RETRIES}), retrying...`);
+                await sleep(RETRY_DELAYS[attempt]);
+              } else {
+                addLog("extracting", `Chunk ${chunkIdx + 1}/${totalChunks}: failed after ${MAX_RETRIES} attempts`);
+                failedChunkCount++;
+                setChunkStatuses((prev) => {
+                  const next = [...prev];
+                  next[chunkIdx] = "failed";
+                  return next;
+                });
+              }
+            }
+          } catch (err) {
+            if (attempt < MAX_RETRIES - 1) {
+              addLog("extracting", `Chunk ${chunkIdx + 1} error (attempt ${attempt + 1}): ${String(err).slice(0, 80)}, retrying...`);
+              await sleep(RETRY_DELAYS[attempt]);
+            } else {
+              addLog("extracting", `Chunk ${chunkIdx + 1}/${totalChunks}: failed after ${MAX_RETRIES} attempts`);
+              failedChunkCount++;
+              setChunkStatuses((prev) => {
+                const next = [...prev];
+                next[chunkIdx] = "failed";
+                return next;
+              });
+            }
+          }
         }
 
         completedChunks++;
@@ -461,12 +678,12 @@ export default function UploadPage() {
       const workers = Array.from({ length: Math.min(CONCURRENCY, totalChunks) }, async () => {
         while (queue.length > 0) {
           const idx = queue.shift()!;
-          await processChunk(idx);
+          await processChunkWithRetry(idx, chunks[idx]);
         }
       });
       await Promise.all(workers);
 
-      // 4. Finalize (send content fingerprint data along)
+      // 4. Finalize — send chunk failure/truncation data
       setStage("finalizing");
       setProgressLabel("Finalizing — building search index...");
       addLog("indexing", "Building full-text search index...");
@@ -478,18 +695,45 @@ export default function UploadPage() {
         body: JSON.stringify({
           content_hash: fingerprintData?.content_hash ?? null,
           text_sample: fingerprintData?.text_sample ?? null,
+          failed_chunks: failedChunkCount,
+          total_chunks: totalChunks,
+          truncated_chunks: truncatedChunkCount,
+          reextracted_pages: reextractedPageCount,
+          filtered_products: filteredProductCount,
+          catalog_type: classification.catalog_type,
+          pages_skipped: skippedPages.length,
+          pages_processed: pagesToProcess.length,
         }),
       });
       if (!finalRes.ok) throw new Error(`Finalize failed: ${await finalRes.text()}`);
-      const { inserted, indexed } = await finalRes.json();
+      const finalData = await finalRes.json();
 
-      addLog("completed", `Done! ${inserted} products inserted, ${indexed} indexed for search.`);
       setProgress(100);
-      setStage("done");
-      setProgressLabel("Processing complete!");
-      toast.success("Catalog processed successfully!");
 
-      setTimeout(() => router.push(`/catalog/${catalog_id}`), 1500);
+      // P0-6: Show appropriate completion status
+      if (finalData.warnings || failedChunkCount > 0 || truncatedChunkCount > 0) {
+        const warnings: string[] = [];
+        if (failedChunkCount > 0) warnings.push(`${failedChunkCount} chunks failed`);
+        if (truncatedChunkCount > 0) warnings.push(`${truncatedChunkCount} chunks had truncated responses`);
+        const warnText = `${finalData.inserted} products extracted. Warnings: ${warnings.join(", ")}`;
+        setWarningMsg(warnText);
+        addLog("completed", warnText);
+        setStage("done_with_warnings");
+        setProgressLabel("Processing complete with warnings");
+        toast.warning("Catalog processed with some warnings");
+      } else {
+        const report = finalData.extraction_report;
+        const details: string[] = [`${finalData.inserted} products extracted`];
+        if (report?.pages_skipped > 0) details.push(`${report.pages_skipped} pages skipped`);
+        if (report?.reextracted_pages > 0) details.push(`${report.reextracted_pages} pages re-extracted`);
+        if (report?.filtered_products > 0) details.push(`${report.filtered_products} low-quality removed`);
+        addLog("completed", `Done! ${details.join(", ")}. ${finalData.indexed} indexed for search.`);
+        setStage("done");
+        setProgressLabel("Processing complete!");
+        toast.success("Catalog processed successfully!");
+      }
+
+      setTimeout(() => router.push(`/catalog/${catalog_id}`), 2000);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setErrorMsg(msg);
@@ -573,7 +817,7 @@ export default function UploadPage() {
         <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
           {[
             { icon: "search" as const, title: "Smart Deduplication", desc: "Detects if this catalog was already processed" },
-            { icon: "sparkle" as const, title: "Parallel Extraction", desc: `${CONCURRENCY} chunks processed concurrently for speed` },
+            { icon: "sparkle" as const, title: "Parallel Extraction", desc: "Multiple chunks processed concurrently for speed" },
             { icon: "catalog" as const, title: "Full-Text Index", desc: "PostgreSQL tsvector for instant search" },
           ].map((c) => (
             <Card key={c.title} className="p-4">
@@ -618,6 +862,20 @@ export default function UploadPage() {
         </Card>
       )}
 
+      {/* Done with warnings */}
+      {stage === "done_with_warnings" && (
+        <Card className="p-6 bg-amber-50 border-amber-200">
+          <div className="flex items-start gap-3">
+            <Icon name="warning" className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" strokeWidth={2} />
+            <div className="flex-1">
+              <p className="font-semibold text-amber-700 text-sm">Processing completed with warnings</p>
+              <p className="text-xs text-amber-600 mt-1">{warningMsg}</p>
+              <p className="text-xs text-amber-500 mt-2">Redirecting to catalog view...</p>
+            </div>
+          </div>
+        </Card>
+      )}
+
       {/* Error */}
       {stage === "error" && (
         <Card className="p-6 bg-red-50 border-red-200">
@@ -629,7 +887,7 @@ export default function UploadPage() {
             </div>
           </div>
           <Button
-            onClick={() => { setStage("idle"); setLog([]); setProgress(0); setChunkStatuses([]); }}
+            onClick={() => { setStage("idle"); setLog([]); setProgress(0); setChunkStatuses([]); setWarningMsg(""); }}
             variant="destructive"
             className="mt-4 w-full"
           >
@@ -648,7 +906,6 @@ export default function UploadPage() {
 
           {bestMatch && (
             <div className="mt-4 space-y-4">
-              {/* Match info card */}
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-medium text-slate-500 uppercase tracking-wider">Match</span>
@@ -676,7 +933,6 @@ export default function UploadPage() {
                 <p className="text-xs text-slate-400 italic">{bestMatch.match_details}</p>
               </div>
 
-              {/* Action buttons */}
               <div className="space-y-2">
                 {bestMatch.confidence >= 90 && (
                   <Button onClick={handleReuse} className="w-full" size="lg">
@@ -726,7 +982,7 @@ function ProcessingView({
   progress: number;
   progressLabel: string;
   log: LogEntry[];
-  chunkStatuses: ("pending" | "running" | "done" | "failed")[];
+  chunkStatuses: ("pending" | "running" | "done" | "failed" | "truncated")[];
 }) {
   const stages = [
     { key: "fingerprinting", label: "Dedup Check" },
@@ -806,6 +1062,8 @@ function ProcessingView({
                     ? "bg-indigo-400 animate-pulse"
                     : s === "failed"
                     ? "bg-red-400"
+                    : s === "truncated"
+                    ? "bg-amber-400"
                     : "bg-slate-200"
                 }`}
               />

@@ -30,55 +30,73 @@ export function stripMarkdownFences(text: string): string {
 export function repairTruncatedJsonArray(text: string): unknown[] {
   text = stripMarkdownFences(text);
   try {
-    return JSON.parse(text);
+    const result = JSON.parse(text);
+    return Array.isArray(result) ? result : [];
   } catch {}
+
+  // Handle case where Claude returns just "[]" with extra whitespace/text
+  if (text.trim() === "[]") return [];
 
   const lastComma = text.lastIndexOf("},");
   if (lastComma > 0) {
     try {
-      return JSON.parse(text.slice(0, lastComma + 1) + "]");
+      const repaired = JSON.parse(text.slice(0, lastComma + 1) + "]");
+      console.warn(`[repairJSON] Truncated response repaired: recovered ${repaired.length} items from ${text.length} chars`);
+      return repaired;
     } catch {}
   }
 
   const lastBrace = text.lastIndexOf("}");
   if (lastBrace > 0) {
     try {
-      return JSON.parse(text.slice(0, lastBrace + 1) + "]");
+      const repaired = JSON.parse(text.slice(0, lastBrace + 1) + "]");
+      console.warn(`[repairJSON] Truncated response repaired: recovered ${repaired.length} items from ${text.length} chars`);
+      return repaired;
     } catch {}
   }
 
-  throw new Error("Could not repair truncated JSON array");
+  // If nothing works, return empty rather than throwing — don't lose the whole chunk
+  console.error(`[repairJSON] Could not parse response (${text.length} chars). Preview: ${text.slice(0, 300)}`);
+  return [];
 }
 
 /**
  * Build Claude content blocks from page data.
- * Supports both URL-based (preferred, avoids payload limits) and base64-based images.
+ * Bedrock doesn't support URL image sources, so when a URL is provided
+ * the image is fetched and converted to base64.
  */
-export function buildPageContentBlocks(
-  pages: Array<{ page_number: number; image_url?: string; image_base64?: string; text: string }>
+export async function buildPageContentBlocks(
+  pages: Array<{ page_number: number; image_url?: string; image_base64?: string; text: string }>,
+  textLimit = 8000
 ) {
   const blocks: object[] = [];
   for (const page of pages) {
     blocks.push({ type: "text", text: `--- Page ${page.page_number} ---` });
 
-    if (page.image_url) {
-      // URL source — no payload size concern, full quality
+    let base64 = page.image_base64;
+
+    if (page.image_url && !base64) {
+      // Fetch image from S3 URL and convert to base64 for Bedrock
+      try {
+        const res = await fetch(page.image_url);
+        const arrayBuffer = await res.arrayBuffer();
+        base64 = Buffer.from(arrayBuffer).toString("base64");
+      } catch {
+        // Non-critical — skip image
+      }
+    }
+
+    if (base64) {
       blocks.push({
         type: "image",
-        source: { type: "url", url: page.image_url },
-      });
-    } else if (page.image_base64) {
-      // Fallback: inline base64
-      blocks.push({
-        type: "image",
-        source: { type: "base64", media_type: "image/png", data: page.image_base64 },
+        source: { type: "base64", media_type: "image/png", data: base64 },
       });
     }
 
     if (page.text) {
       blocks.push({
         type: "text",
-        text: `[Extracted text from page ${page.page_number}]:\n${page.text.slice(0, 2000)}`,
+        text: `[Extracted text from page ${page.page_number}]:\n${page.text.slice(0, textLimit)}`,
       });
     }
   }
