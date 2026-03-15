@@ -2,9 +2,23 @@ import { NextRequest, NextResponse } from "next/server";
 import { getClaudeClient, CLAUDE_MODEL, stripMarkdownFences } from "@/lib/claude";
 import { getSupabase } from "@/lib/supabase";
 import { uploadImageToS3 } from "@/lib/s3";
+import { escapeSQLString, escapeILIKE } from "@/lib/types";
+import { normalizeQuery, getExpandedKeywords } from "@/lib/search-enhancer";
 import { v4 as uuidv4 } from "uuid";
 
 export const maxDuration = 60;
+
+// Common stop words
+const STOP_WORDS = new Set(["a","an","the","and","or","but","in","on","at","to","for","of","with","by","from","is","it","as","be","was","are","has","had","not","no","its","this","that","rs","per"]);
+
+function filterKeywords(keywords: string[]): string[] {
+  return keywords.filter((kw) => kw.length >= 2 && !STOP_WORDS.has(kw.toLowerCase()));
+}
+
+function kwMatchExpr(kw: string): string {
+  const escaped = escapeILIKE(escapeSQLString(kw));
+  return `(psi.description ILIKE '%${escaped}%' OR psi.product_name ILIKE '%${escaped}%' OR psi.category ILIKE '%${escaped}%' OR psi.sub_category ILIKE '%${escaped}%')`;
+}
 
 export async function POST(req: NextRequest) {
   const formData = await req.formData();
@@ -31,7 +45,7 @@ export async function POST(req: NextRequest) {
 
   // Step 1: Claude Vision describes the product in the image
   const client = getClaudeClient();
-  const describeResponse = await client.messages.create({
+  const describeStream = client.messages.stream({
     model: CLAUDE_MODEL,
     max_tokens: 1024,
     messages: [
@@ -71,53 +85,75 @@ Return ONLY valid JSON (no markdown, no explanation):
       },
     ],
   });
+  const describeResponse = await describeStream.finalMessage();
 
   const rawText = (describeResponse.content[0] as { type: string; text: string }).text;
   const parsed = JSON.parse(stripMarkdownFences(rawText));
 
-  // Step 2: Search using the generated query
-  const tsquery = (parsed.tsquery ?? "").replace(/[';\\]/g, "");
-  const conditions: string[] = [];
+  // Step 2: Enhanced search using normalized + expanded query
+  const searchQuery = parsed.search_query ?? "";
+  const normalized = normalizeQuery(searchQuery);
+  const expandedKeywords = getExpandedKeywords(normalized);
 
-  if (tsquery) {
-    conditions.push(`psi.search_text @@ to_tsquery(''english'', ''${tsquery}'')`);
-  }
-  if (parsed.category) {
-    const cat = parsed.category.replace(/[';\\]/g, "");
-    conditions.push(`(psi.category ILIKE ''%${cat}%'' OR psi.sub_category ILIKE ''%${cat}%'')`);
-  }
+  const originalKeywords = filterKeywords(searchQuery.split(/\s+/).filter(Boolean));
+  const allKeywords = filterKeywords([...new Set([...originalKeywords, ...expandedKeywords])]);
 
-  const whereClause = conditions.length > 0 ? conditions.join(" AND ") : "TRUE";
-  const rankExpr = tsquery
-    ? `ts_rank(psi.search_text, to_tsquery(''english'', ''${tsquery}''))`
-    : "1";
+  const tsquery = escapeSQLString(parsed.tsquery ?? "");
+  const cat = parsed.category ? escapeSQLString(parsed.category) : null;
+
+  // Build ILIKE conditions
+  const keywordCountCases = allKeywords.map((kw: string) => `CASE WHEN ${kwMatchExpr(kw)} THEN 1 ELSE 0 END`);
+  const keywordCountExpr = keywordCountCases.length > 0 ? `(${keywordCountCases.join(" + ")})` : "0";
+  const minMatches = allKeywords.length <= 2 ? 1 : Math.ceil(allKeywords.length / 2);
+  const ilikeCondition = allKeywords.length > 0 ? `(${keywordCountExpr} >= ${minMatches})` : "FALSE";
+
+  // Category filter
+  const catFilter = cat ? `AND (psi.category ILIKE '%${escapeILIKE(cat)}%' OR psi.sub_category ILIKE '%${escapeILIKE(cat)}%')` : "";
+
+  const tsCondition = tsquery ? `psi.search_text @@ to_tsquery('english', '${tsquery}')` : "FALSE";
+  const tsRank = tsquery ? `ts_rank(psi.search_text, to_tsquery('english', '${tsquery}'))` : "0";
+
+  // Also try websearch with the enhanced query for broader matching
+  const sanitizedEnhanced = escapeSQLString(normalized.normalized);
+  const wsCondition = `psi.search_text @@ websearch_to_tsquery('english', '${sanitizedEnhanced}')`;
 
   const sql = `
-    SELECT
-      psi.id,
-      psi.catalog_id,
-      psi.product_name,
-      psi.category,
-      psi.sub_category,
-      psi.description,
-      psi.price,
-      psi.price_unit,
-      psi.image_url,
-      psi.raw_data,
-      c.company_name,
-      c.catalog_name,
-      ${rankExpr} as relevance
-    FROM product_search_index psi
-    JOIN master_catalogs c ON c.id = psi.catalog_id
-    WHERE ${whereClause}
+    WITH ts_results AS (
+      SELECT
+        psi.id, psi.catalog_id, psi.product_name, psi.category, psi.sub_category,
+        psi.description, psi.price, psi.price_unit, psi.image_url, psi.raw_data,
+        c.company_name, c.catalog_name,
+        (100.0 + ${tsRank} * 100) as relevance
+      FROM product_search_index psi
+      JOIN master_catalogs c ON c.id = psi.catalog_id
+      WHERE (${tsCondition} OR ${wsCondition}) ${catFilter}
+      LIMIT 30
+    ),
+    ilike_results AS (
+      SELECT
+        psi.id, psi.catalog_id, psi.product_name, psi.category, psi.sub_category,
+        psi.description, psi.price, psi.price_unit, psi.image_url, psi.raw_data,
+        c.company_name, c.catalog_name,
+        (${keywordCountExpr}::float / ${Math.max(allKeywords.length, 1)}.0 * 90) as relevance
+      FROM product_search_index psi
+      JOIN master_catalogs c ON c.id = psi.catalog_id
+      WHERE ${ilikeCondition} ${catFilter}
+        AND psi.id NOT IN (SELECT id FROM ts_results)
+      LIMIT 30
+    )
+    SELECT * FROM (
+      SELECT * FROM ts_results
+      UNION ALL
+      SELECT * FROM ilike_results
+    ) combined
     ORDER BY relevance DESC
-    LIMIT 20
+    LIMIT 30
   `;
 
   const countSql = `
     SELECT COUNT(*)::int as total
     FROM product_search_index psi
-    WHERE ${whereClause}
+    WHERE ((${tsCondition} OR ${wsCondition}) OR ${ilikeCondition}) ${catFilter}
   `;
 
   const sb = getSupabase();
@@ -134,9 +170,11 @@ Return ONLY valid JSON (no markdown, no explanation):
     query_image_url: imageUrl,
     ai_description: parsed.description,
     parsed_filters: {
-      keywords: parsed.search_query?.split(" ") ?? [],
+      keywords: originalKeywords,
+      expanded_keywords: allKeywords,
       category: parsed.category,
       tsquery: parsed.tsquery,
+      expansions: normalized.expanded_terms,
     },
     total_results: total,
     results,

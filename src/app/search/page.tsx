@@ -10,21 +10,24 @@ import { Icon } from "@/components/ui/icon";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 
-const SUGGESTED_QUERIES = [
-  "wall hung EWC under 20000",
-  "50mm PVC pipe",
-  "washbasin white",
-  "rimless toilet",
-  "pressure pipe 6kg",
-];
-
 type SearchMode = "text" | "image";
+
+interface CatalogOption {
+  id: string;
+  catalog_name: string;
+  company_name: string;
+  total_products: number;
+}
 
 interface SearchResponse {
   query: string;
+  ai_interpretation?: string;
+  search_mode?: "catalog_specific" | "global";
+  sql_filter?: string | null;
+  catalog_context?: { catalog_id: string; catalog_name: string; company_name: string } | null;
   query_image_url?: string;
   ai_description?: string;
-  parsed_filters: Record<string, unknown>;
+  parsed_filters?: Record<string, unknown>;
   results: SearchResultItem[];
   total_results: number;
 }
@@ -38,15 +41,59 @@ export default function SearchPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Catalog selector state
+  const [catalogs, setCatalogs] = useState<CatalogOption[]>([]);
+  const [selectedCatalog, setSelectedCatalog] = useState<string>("");
+  const [catalogDropdownOpen, setCatalogDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
   // Image search state
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
 
+  // Dynamic suggestions from actual database
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+
+  // Fetch catalogs for the selector
+  useEffect(() => {
+    fetch("/api/catalogs")
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data: CatalogOption[]) => {
+        const completed = data.filter(
+          (c) => c.total_products > 0
+        );
+        setCatalogs(completed);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/search/suggestions")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.suggestions?.length > 0) setSuggestions(data.suggestions);
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     if (mode === "text") inputRef.current?.focus();
   }, [mode]);
+
+  // Close catalog dropdown on outside click
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setCatalogDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  const selectedCatalogName = catalogs.find((c) => c.id === selectedCatalog)?.catalog_name;
 
   // ── Text search ────────────────────────────────────────────────────────────
   async function handleTextSearch(q?: string) {
@@ -59,10 +106,13 @@ export default function SearchPage() {
     setExpandedId(null);
 
     try {
+      const body: Record<string, unknown> = { query: searchQuery };
+      if (selectedCatalog) body.catalog_id = selectedCatalog;
+
       const res = await fetch("/api/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: searchQuery }),
+        body: JSON.stringify(body),
       });
 
       if (!res.ok) {
@@ -135,24 +185,24 @@ export default function SearchPage() {
     if (file) handleImageSelect(file);
   }, []);
 
-  const activeFilters = response?.parsed_filters
-    ? Object.entries(response.parsed_filters).filter(([, v]) => v != null && v !== "" && !(Array.isArray(v) && v.length === 0))
-    : [];
-
   return (
     <div className="p-6 md:p-8 max-w-4xl mx-auto">
       {/* Header */}
       <div className="mb-6">
         <h2 className="text-2xl font-bold text-slate-900">Search Products</h2>
         <p className="text-sm text-slate-500 mt-0.5">
-          Search by text or upload a product image — Claude AI powers both.
+          Search in natural language — AI understands product specs, sizes, and types.
         </p>
       </div>
 
       {/* Mode tabs */}
       <div className="flex gap-1 p-1 bg-slate-100 rounded-xl w-fit mb-6">
         <button
-          onClick={() => { setMode("text"); setResponse(null); setSubmitted(""); }}
+          onClick={() => {
+            setMode("text");
+            setResponse(null);
+            setSubmitted("");
+          }}
           className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
             mode === "text"
               ? "bg-white text-slate-900 shadow-sm"
@@ -163,7 +213,11 @@ export default function SearchPage() {
           Text Search
         </button>
         <button
-          onClick={() => { setMode("image"); setResponse(null); setSubmitted(""); }}
+          onClick={() => {
+            setMode("image");
+            setResponse(null);
+            setSubmitted("");
+          }}
           className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
             mode === "image"
               ? "bg-white text-slate-900 shadow-sm"
@@ -178,15 +232,94 @@ export default function SearchPage() {
       {/* ── Text Search Mode ─────────────────────────────────────────────────── */}
       {mode === "text" && (
         <>
+          {/* Catalog selector */}
+          <div className="mb-3" ref={dropdownRef}>
+            <div className="relative">
+              <button
+                onClick={() => setCatalogDropdownOpen(!catalogDropdownOpen)}
+                className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm border transition-all ${
+                  selectedCatalog
+                    ? "bg-indigo-50 border-indigo-200 text-indigo-700"
+                    : "bg-white border-slate-200 text-slate-500 hover:border-slate-300"
+                }`}
+              >
+                <Icon name="filter" className="w-4 h-4" />
+                {selectedCatalog ? (
+                  <span className="font-medium truncate max-w-xs">
+                    {selectedCatalogName}
+                  </span>
+                ) : (
+                  <span>All Catalogs</span>
+                )}
+                <Icon
+                  name="chevronDown"
+                  className={`w-3.5 h-3.5 transition-transform ${catalogDropdownOpen ? "rotate-180" : ""}`}
+                />
+              </button>
+
+              {catalogDropdownOpen && (
+                <div className="absolute top-full left-0 mt-1 w-80 bg-white border border-slate-200 rounded-xl shadow-lg z-50 py-1 max-h-64 overflow-y-auto">
+                  <button
+                    onClick={() => {
+                      setSelectedCatalog("");
+                      setCatalogDropdownOpen(false);
+                    }}
+                    className={`w-full text-left px-4 py-2.5 text-sm hover:bg-slate-50 transition-colors ${
+                      !selectedCatalog ? "bg-indigo-50 text-indigo-700 font-medium" : "text-slate-700"
+                    }`}
+                  >
+                    All Catalogs
+                    <span className="text-xs text-slate-400 ml-2">Search across everything</span>
+                  </button>
+                  {catalogs.map((cat) => (
+                    <button
+                      key={cat.id}
+                      onClick={() => {
+                        setSelectedCatalog(cat.id);
+                        setCatalogDropdownOpen(false);
+                      }}
+                      className={`w-full text-left px-4 py-2.5 text-sm hover:bg-slate-50 transition-colors ${
+                        selectedCatalog === cat.id
+                          ? "bg-indigo-50 text-indigo-700 font-medium"
+                          : "text-slate-700"
+                      }`}
+                    >
+                      <div className="truncate">{cat.catalog_name}</div>
+                      <div className="text-xs text-slate-400 mt-0.5">
+                        {cat.company_name} &middot; {cat.total_products} products
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Search input */}
           <div className="relative mb-4">
             <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
               {loading ? (
-                <svg className="w-5 h-5 text-indigo-400 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                <svg
+                  className="w-5 h-5 text-indigo-400 animate-spin"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                >
+                  <circle
+                    className="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                  />
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                  />
                 </svg>
               ) : (
-                <Icon name="search" className="w-5 h-5 text-slate-400" />
+                <Icon name="sparkle" className="w-5 h-5 text-indigo-400" />
               )}
             </div>
             <input
@@ -195,23 +328,35 @@ export default function SearchPage() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleTextSearch()}
-              placeholder="e.g. rimless wall hung EWC under 20000"
+              placeholder={
+                selectedCatalog
+                  ? "e.g. quickfit pipes 180mm 8 kgf pressure"
+                  : "e.g. CPVC fittings 25mm coupler"
+              }
               className="w-full pl-12 pr-4 py-4 bg-white border border-slate-200 rounded-2xl text-slate-800 placeholder-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-transparent shadow-sm transition-shadow"
             />
             <div className="absolute right-3 inset-y-3">
-              <Button onClick={() => handleTextSearch()} disabled={!query.trim() || loading} size="sm" className="h-full px-4">
+              <Button
+                onClick={() => handleTextSearch()}
+                disabled={!query.trim() || loading}
+                size="sm"
+                className="h-full px-4"
+              >
                 Search
               </Button>
             </div>
           </div>
 
-          {!submitted && (
+          {!submitted && suggestions.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-8">
               <span className="text-xs text-slate-400 self-center">Try:</span>
-              {SUGGESTED_QUERIES.map((q) => (
+              {suggestions.map((q) => (
                 <button
                   key={q}
-                  onClick={() => { setQuery(q); handleTextSearch(q); }}
+                  onClick={() => {
+                    setQuery(q);
+                    handleTextSearch(q);
+                  }}
                   className="px-3 py-1.5 bg-white border border-slate-200 text-slate-500 text-xs rounded-lg hover:bg-indigo-50 hover:border-indigo-200 hover:text-indigo-600 transition-all"
                 >
                   {q}
@@ -252,10 +397,16 @@ export default function SearchPage() {
                   <Icon name="camera" className="w-7 h-7 text-indigo-400" />
                 </div>
                 <div>
-                  <p className="font-semibold text-slate-700">Drop a product image or catalog page</p>
-                  <p className="text-sm text-slate-400 mt-0.5">Photo of a product, screenshot, or catalog page — JPEG, PNG, WebP</p>
+                  <p className="font-semibold text-slate-700">
+                    Drop a product image or catalog page
+                  </p>
+                  <p className="text-sm text-slate-400 mt-0.5">
+                    Photo of a product, screenshot, or catalog page — JPEG, PNG, WebP
+                  </p>
                 </div>
-                <p className="text-xs text-slate-300">Claude Vision identifies products and finds matches in your catalogs</p>
+                <p className="text-xs text-slate-300">
+                  Claude Vision identifies products and finds matches in your catalogs
+                </p>
               </div>
             </div>
           ) : (
@@ -273,7 +424,9 @@ export default function SearchPage() {
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-slate-800 text-sm truncate">{imageFile.name}</p>
+                    <p className="font-semibold text-slate-800 text-sm truncate">
+                      {imageFile.name}
+                    </p>
                     <p className="text-xs text-slate-400 mt-0.5">
                       {(imageFile.size / 1024 / 1024).toFixed(2)} MB
                     </p>
@@ -283,12 +436,14 @@ export default function SearchPage() {
                           <Icon name="sparkle" className="w-3 h-3 text-indigo-400" />
                           AI identified
                         </p>
-                        <p className="text-xs text-indigo-700 font-medium">{response.ai_description}</p>
+                        <p className="text-xs text-indigo-700 font-medium">
+                          {response.ai_description}
+                        </p>
                       </div>
                     )}
                     <div className="flex gap-2 mt-3">
                       <Button onClick={handleImageSearch} disabled={loading} size="sm">
-                        {loading ? "Searching…" : "Search by Image"}
+                        {loading ? "Searching..." : "Search by Image"}
                       </Button>
                       <Button
                         variant="ghost"
@@ -313,17 +468,43 @@ export default function SearchPage() {
 
       {/* ── Shared results section ───────────────────────────────────────────── */}
 
-      {/* AI Parsed Filters */}
-      {response && activeFilters.length > 0 && (
-        <div className="mb-5">
+      {/* AI interpretation badge */}
+      {response?.ai_interpretation && (
+        <div className="mb-4">
+          <div className="flex items-start gap-2 p-3 bg-indigo-50 rounded-xl">
+            <Icon name="sparkle" className="w-4 h-4 text-indigo-400 mt-0.5 shrink-0" />
+            <div>
+              <p className="text-xs text-indigo-700 font-medium">{response.ai_interpretation}</p>
+              {response.search_mode === "catalog_specific" && response.sql_filter && (
+                <p className="text-xs text-indigo-400 mt-1 font-mono">
+                  {response.sql_filter}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Image search AI description */}
+      {response?.parsed_filters && !response.ai_interpretation && (
+        <div className="mb-5 space-y-2">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs text-slate-400 flex items-center gap-1">
               <Icon name="sparkle" className="w-3.5 h-3.5 text-indigo-400" />
               AI parsed:
             </span>
-            {activeFilters.map(([key, val]) => (
-              <FilterChip key={key} label={key} value={val} />
-            ))}
+            {Object.entries(response.parsed_filters)
+              .filter(
+                ([key, v]) =>
+                  v != null &&
+                  v !== "" &&
+                  !(Array.isArray(v) && v.length === 0) &&
+                  key !== "expansions" &&
+                  key !== "expanded_keywords"
+              )
+              .map(([key, val]) => (
+                <FilterChip key={key} label={key} value={val} />
+              ))}
           </div>
         </div>
       )}
@@ -365,7 +546,9 @@ export default function SearchPage() {
                   key={item.id}
                   item={item}
                   expanded={expandedId === item.id}
-                  onToggle={() => setExpandedId(expandedId === item.id ? null : item.id)}
+                  onToggle={() =>
+                    setExpandedId(expandedId === item.id ? null : item.id)
+                  }
                 />
               ))}
             </div>
@@ -382,7 +565,9 @@ export default function SearchPage() {
 // ─── Filter Chip ──────────────────────────────────────────────────────────────
 function FilterChip({ label, value }: { label: string; value: unknown }) {
   const displayVal =
-    typeof value === "object" && value !== null ? JSON.stringify(value) : String(value);
+    typeof value === "object" && value !== null
+      ? JSON.stringify(value)
+      : String(value);
 
   const colorMap: Record<string, string> = {
     keywords: "bg-indigo-50 text-indigo-600 ring-indigo-200",
@@ -393,10 +578,13 @@ function FilterChip({ label, value }: { label: string; value: unknown }) {
     material: "bg-violet-50 text-violet-600 ring-violet-200",
   };
 
-  const colorClass = colorMap[label] ?? "bg-slate-50 text-slate-600 ring-slate-200";
+  const colorClass =
+    colorMap[label] ?? "bg-slate-50 text-slate-600 ring-slate-200";
 
   return (
-    <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium ring-1 ring-inset ${colorClass}`}>
+    <span
+      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium ring-1 ring-inset ${colorClass}`}
+    >
       <span className="opacity-60">{label}:</span>
       {displayVal}
     </span>
@@ -422,31 +610,49 @@ function ResultCard({
           {/* Product image thumbnail */}
           {item.image_url && (
             <div className="relative w-16 h-16 rounded-lg overflow-hidden bg-slate-100 shrink-0">
-              <Image src={item.image_url} alt={item.product_name ?? ""} fill className="object-cover" />
+              <Image
+                src={item.image_url}
+                alt={item.product_name ?? ""}
+                fill
+                className="object-cover"
+              />
             </div>
           )}
 
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xs text-slate-400 bg-slate-50 border border-slate-100 px-2 py-0.5 rounded-full">
-                {item.catalog_name ?? item.catalog_id}
-              </span>
-              {item.category && (
-                <span className="text-xs text-indigo-500 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-full">
-                  {item.category}
-                </span>
-              )}
-              {item.sub_category && (
-                <span className="text-xs text-slate-400">{item.sub_category}</span>
-              )}
-            </div>
+            <p className="text-xs text-slate-400 mb-1 truncate">
+              {item.catalog_name ?? item.catalog_id}
+            </p>
 
             <h4 className="font-semibold text-slate-900 text-sm leading-tight">
               {item.product_name ?? "Unnamed product"}
             </h4>
 
+            {(item.category || item.sub_category) && (
+              <div className="flex items-center gap-1.5 mt-1.5">
+                {item.category && (
+                  <span className="text-xs text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md font-medium">
+                    {item.category}
+                  </span>
+                )}
+                {item.category && item.sub_category && (
+                  <Icon
+                    name="chevronDown"
+                    className="w-3 h-3 text-slate-300 -rotate-90"
+                  />
+                )}
+                {item.sub_category && (
+                  <span className="text-xs text-slate-500 bg-slate-50 px-2 py-0.5 rounded-md">
+                    {item.sub_category}
+                  </span>
+                )}
+              </div>
+            )}
+
             {item.description && (
-              <p className="text-xs text-slate-500 mt-1 line-clamp-2">{item.description}</p>
+              <p className="text-xs text-slate-400 mt-1.5 line-clamp-1">
+                {item.description}
+              </p>
             )}
           </div>
 
@@ -473,18 +679,33 @@ function ResultCard({
             {/* Large image in expanded view */}
             {item.image_url && (
               <div className="relative w-40 h-40 rounded-xl overflow-hidden bg-slate-100 shrink-0">
-                <Image src={item.image_url} alt={item.product_name ?? ""} fill className="object-contain" />
+                <Image
+                  src={item.image_url}
+                  alt={item.product_name ?? ""}
+                  fill
+                  className="object-contain"
+                />
               </div>
             )}
             <div className="flex-1">
-              <p className="text-xs font-semibold text-slate-400 mb-3">Full product details</p>
+              <p className="text-xs font-semibold text-slate-400 mb-3">
+                Full product details
+              </p>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-2">
                 {Object.entries(rawData)
-                  .filter(([k, v]) => v != null && k !== "catalog_id" && k !== "id" && k !== "_image_url")
+                  .filter(
+                    ([k, v]) =>
+                      v != null &&
+                      k !== "catalog_id" &&
+                      k !== "id" &&
+                      k !== "_image_url"
+                  )
                   .map(([k, v]) => (
                     <div key={k}>
                       <p className="text-xs text-slate-400 font-mono">{k}</p>
-                      <p className="text-xs text-slate-700 font-medium break-words">{String(v)}</p>
+                      <p className="text-xs text-slate-700 font-medium break-words">
+                        {String(v)}
+                      </p>
                     </div>
                   ))}
               </div>
@@ -511,10 +732,14 @@ function EmptyState() {
   return (
     <div className="flex flex-col items-center justify-center py-16 text-center">
       <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center mb-4">
-        <Icon name="search" className="w-7 h-7 text-slate-300" />
+        <Icon name="sparkle" className="w-7 h-7 text-indigo-300" />
       </div>
-      <p className="text-sm font-medium text-slate-500">Search across all your product catalogs</p>
-      <p className="text-xs text-slate-400 mt-1">Use text or upload a product image — Claude AI powers both</p>
+      <p className="text-sm font-medium text-slate-500">
+        AI-powered search across all your product catalogs
+      </p>
+      <p className="text-xs text-slate-400 mt-1">
+        Select a catalog for precise results, or search across everything
+      </p>
     </div>
   );
 }
@@ -525,8 +750,12 @@ function NoResults({ query }: { query: string }) {
       <div className="w-12 h-12 rounded-2xl bg-slate-50 flex items-center justify-center mx-auto mb-3">
         <Icon name="noResults" className="w-6 h-6 text-slate-300" />
       </div>
-      <p className="text-sm font-semibold text-slate-600">No products found for &ldquo;{query}&rdquo;</p>
-      <p className="text-xs text-slate-400 mt-1">Try different keywords or a broader search term</p>
+      <p className="text-sm font-semibold text-slate-600">
+        No products found for &ldquo;{query}&rdquo;
+      </p>
+      <p className="text-xs text-slate-400 mt-1">
+        Try different keywords or select a specific catalog
+      </p>
     </Card>
   );
 }
