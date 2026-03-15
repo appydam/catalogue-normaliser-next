@@ -13,6 +13,10 @@ export function getS3Client(): S3Client {
         accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
         secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
       },
+      requestHandler: {
+        requestTimeout: 15000,
+        connectionTimeout: 5000,
+      } as never,
     });
   }
   return _client;
@@ -20,6 +24,7 @@ export function getS3Client(): S3Client {
 
 /**
  * Upload a base64-encoded image to S3 and return the public URL.
+ * P1-4: Retries once with 1s delay before throwing.
  */
 export async function uploadImageToS3(
   key: string,
@@ -29,14 +34,32 @@ export async function uploadImageToS3(
   const buffer = Buffer.from(base64Data, "base64");
   const s3 = getS3Client();
 
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: BUCKET,
-      Key: key,
-      Body: buffer,
-      ContentType: contentType,
-    })
-  );
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), 15000);
 
-  return `https://${BUCKET}.s3.${REGION}.amazonaws.com/${key}`;
+    try {
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: BUCKET,
+          Key: key,
+          Body: buffer,
+          ContentType: contentType,
+        }),
+        { abortSignal: abortController.signal }
+      );
+      clearTimeout(timeout);
+      return `https://${BUCKET}.s3.${REGION}.amazonaws.com/${key}`;
+    } catch (err) {
+      clearTimeout(timeout);
+      if (attempt === 0) {
+        await new Promise((r) => setTimeout(r, 1000));
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  // Should never reach here, but TypeScript needs it
+  throw new Error("S3 upload failed after retries");
 }

@@ -30,6 +30,9 @@ export default function CatalogDetailPage() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [sortBy, setSortBy] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [editingName, setEditingName] = useState(false);
+  const [nameInput, setNameInput] = useState("");
+  const [savingName, setSavingName] = useState(false);
 
   const schema = catalog?.schema_definition as { columns: ColumnDefinition[] } | undefined;
   const allCols = schema?.columns.map((c) => c.name) ?? [];
@@ -57,7 +60,7 @@ export default function CatalogDetailPage() {
   }, [id, router]);
 
   const fetchProducts = useCallback(async (pageNum: number) => {
-    if (!catalog || catalog.processing_status !== "completed") return;
+    if (!catalog || !["completed", "completed_with_warnings"].includes(catalog.processing_status)) return;
     setProductsLoading(true);
     try {
       let url = `/api/catalogs/${id}/products?page=${pageNum}&page_size=${PAGE_SIZE}`;
@@ -76,18 +79,18 @@ export default function CatalogDetailPage() {
   }, [catalog, id, sortBy, sortDir]);
 
   useEffect(() => {
-    if (catalog?.processing_status === "completed") fetchProducts(page);
+    if (catalog?.processing_status === "completed" || catalog?.processing_status === "completed_with_warnings") fetchProducts(page);
   }, [catalog, page, fetchProducts]);
 
   // Auto-refresh while processing
   useEffect(() => {
-    if (!catalog || ["completed", "failed"].includes(catalog.processing_status)) return;
+    if (!catalog || ["completed", "completed_with_warnings", "failed"].includes(catalog.processing_status)) return;
     const interval = setInterval(async () => {
       const res = await fetch(`/api/catalogs/${id}`);
       if (res.ok) {
         const data: Catalog = await res.json();
         setCatalog(data);
-        if (data.processing_status === "completed" && data.schema_definition) {
+        if ((data.processing_status === "completed" || data.processing_status === "completed_with_warnings") && data.schema_definition) {
           const cols = (data.schema_definition as { columns: ColumnDefinition[] }).columns.map((c) => c.name);
           setVisibleCols(new Set(cols.slice(0, 8)));
         }
@@ -152,6 +155,33 @@ export default function CatalogDetailPage() {
     setPage(1);
   }
 
+  async function handleSaveName() {
+    if (!nameInput.trim() || nameInput.trim() === catalog?.catalog_name) {
+      setEditingName(false);
+      return;
+    }
+    setSavingName(true);
+    try {
+      const res = await fetch(`/api/catalogs/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalog_name: nameInput.trim() }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setCatalog(updated);
+        toast.success("Catalog name updated");
+      } else {
+        toast.error("Failed to update name");
+      }
+    } catch {
+      toast.error("Failed to update name");
+    } finally {
+      setSavingName(false);
+      setEditingName(false);
+    }
+  }
+
   // ── Render ────────────────────────────────────────────────────────────────────
   if (loading) return <PageSkeleton />;
   if (!catalog) return null;
@@ -173,13 +203,43 @@ export default function CatalogDetailPage() {
       <div className="flex items-start justify-between gap-4 mb-6">
         <div>
           <div className="flex items-center gap-3">
-            <h2 className="text-2xl font-bold text-slate-900">{catalog.catalog_name}</h2>
+            {editingName ? (
+              <div className="flex items-center gap-2">
+                <input
+                  autoFocus
+                  value={nameInput}
+                  onChange={(e) => setNameInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleSaveName();
+                    if (e.key === "Escape") setEditingName(false);
+                  }}
+                  className="text-2xl font-bold text-slate-900 bg-white border border-indigo-300 rounded-lg px-2 py-0.5 focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                />
+                <Button size="sm" onClick={handleSaveName} disabled={savingName}>
+                  {savingName ? "Saving..." : "Save"}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setEditingName(false)}>
+                  Cancel
+                </Button>
+              </div>
+            ) : (
+              <>
+                <h2 className="text-2xl font-bold text-slate-900">{catalog.catalog_name}</h2>
+                <button
+                  onClick={() => { setNameInput(catalog.catalog_name); setEditingName(true); }}
+                  className="p-1 rounded-md hover:bg-slate-100 transition-colors text-slate-400 hover:text-slate-600"
+                  title="Edit catalog name"
+                >
+                  <Icon name="pencil" className="w-4 h-4" />
+                </button>
+              </>
+            )}
             <StatusBadge status={catalog.processing_status} />
           </div>
           <p className="text-sm text-slate-500 mt-0.5">{catalog.company_name}</p>
         </div>
         <div className="flex items-center gap-2">
-          {catalog.processing_status === "completed" && (
+          {(catalog.processing_status === "completed" || catalog.processing_status === "completed_with_warnings") && (
             <Button variant="secondary" size="sm" onClick={exportCsv}>
               <Icon name="download" className="w-4 h-4" />
               Export CSV
@@ -238,13 +298,31 @@ export default function CatalogDetailPage() {
         </Card>
       )}
 
+      {/* Warning banner for completed_with_warnings */}
+      {catalog.processing_status === "completed_with_warnings" && catalog.error_message && (
+        <Card className="mb-6 p-4 bg-amber-50 border-amber-200">
+          <div className="flex items-start gap-3">
+            <Icon name="warning" className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" strokeWidth={2} />
+            <div>
+              <p className="text-sm font-semibold text-amber-700">Extraction completed with warnings</p>
+              <p className="text-xs text-amber-600 mt-1">{catalog.error_message}</p>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* Extraction report from processing log */}
+      {(catalog.processing_status === "completed" || catalog.processing_status === "completed_with_warnings") && catalog.processing_log && (
+        <ExtractionReport log={catalog.processing_log as { timestamp: string; status: string; message: string }[]} />
+      )}
+
       {/* Processing log */}
-      {catalog.processing_status !== "completed" && catalog.processing_log && (
+      {!["completed", "completed_with_warnings", "failed"].includes(catalog.processing_status) && catalog.processing_log && (
         <ProcessingLog status={catalog.processing_status} log={catalog.processing_log as { timestamp: string; status: string; message: string }[]} />
       )}
 
       {/* Products table */}
-      {catalog.processing_status === "completed" && (
+      {(catalog.processing_status === "completed" || catalog.processing_status === "completed_with_warnings") && (
         <Card className="overflow-hidden">
           {/* Table header */}
           <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
@@ -385,6 +463,56 @@ function ProcessingLog({ status, log }: { status: string; log: { timestamp: stri
         ))}
       </div>
     </Card>
+  );
+}
+
+function ExtractionReport({ log }: { log: { timestamp: string; status: string; message: string }[] }) {
+  // Parse extraction stats from processing log
+  const extractingLogs = log.filter((l) => l.status === "extracting");
+  const completedLog = log.find((l) => l.status === "completed" || l.status === "completed_with_warnings");
+
+  // Count chunks and products from log messages
+  const chunkLogs = extractingLogs.filter((l) => /^Chunk \d+\/\d+:/.test(l.message));
+  const skippedLog = extractingLogs.find((l) => l.message.includes("Skipping"));
+  const catalogTypeLog = log.find((l) => l.message.includes("Catalog type:"));
+
+  const skippedCount = skippedLog ? parseInt(skippedLog.message.match(/Skipping (\d+)/)?.[1] ?? "0") : 0;
+  const catalogType = catalogTypeLog?.message.match(/Catalog type: (\w+)/)?.[1] ?? "unknown";
+
+  const totalChunks = chunkLogs.length;
+  const failedChunks = chunkLogs.filter((l) => l.message.includes("failed")).length;
+  const reextractedLogs = extractingLogs.filter((l) => l.message.includes("re-extracted"));
+
+  if (totalChunks === 0 && !completedLog) return null;
+
+  return (
+    <Card className="mb-6">
+      <CardContent>
+        <h3 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
+          <Icon name="sparkle" className="w-4 h-4 text-indigo-400" />
+          Extraction Report
+        </h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <ReportStat label="Catalog Type" value={catalogType} />
+          <ReportStat label="Chunks Processed" value={String(totalChunks)} />
+          {failedChunks > 0 && <ReportStat label="Chunks Failed" value={String(failedChunks)} warn />}
+          {skippedCount > 0 && <ReportStat label="Pages Skipped" value={String(skippedCount)} />}
+          {reextractedLogs.length > 0 && <ReportStat label="Pages Re-extracted" value={String(reextractedLogs.length)} />}
+        </div>
+        {completedLog && (
+          <p className="text-xs text-slate-400 mt-3">{completedLog.message}</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ReportStat({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
+  return (
+    <div className="rounded-lg bg-slate-50 p-2.5">
+      <p className="text-xs text-slate-400">{label}</p>
+      <p className={`text-sm font-bold ${warn ? "text-amber-600" : "text-slate-700"}`}>{value}</p>
+    </div>
   );
 }
 

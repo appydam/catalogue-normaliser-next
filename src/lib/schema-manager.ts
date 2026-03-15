@@ -28,6 +28,12 @@ export async function createDynamicTable(
   columns: ColumnDefinition[]
 ): Promise<void> {
   const sb = getSupabase();
+
+  // Drop existing table if it exists — a new catalog creation should always
+  // start fresh. Using IF NOT EXISTS previously caused silent schema mismatches
+  // when re-uploading the same catalog with a different schema.
+  await sb.rpc("exec_sql", { query: `DROP TABLE IF EXISTS "${tableName}" CASCADE;` });
+
   const colDefs = [
     "id UUID PRIMARY KEY DEFAULT gen_random_uuid()",
     "catalog_id UUID REFERENCES master_catalogs(id) ON DELETE CASCADE",
@@ -37,7 +43,7 @@ export async function createDynamicTable(
       return `${colName} ${pgType}`;
     }),
   ];
-  const sql = `CREATE TABLE IF NOT EXISTS "${tableName}" (\n  ${colDefs.join(",\n  ")}\n);`;
+  const sql = `CREATE TABLE "${tableName}" (\n  ${colDefs.join(",\n  ")}\n);`;
   await sb.rpc("exec_sql", { query: sql });
 }
 
