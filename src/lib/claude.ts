@@ -2,45 +2,8 @@ import AnthropicBedrock from "@anthropic-ai/bedrock-sdk";
 
 let _client: AnthropicBedrock | null = null;
 
-/**
- * The Bedrock SDK's SigV4 signer produces an Authorization header with \n
- * characters (Smithy's SignatureV4 bug). Vercel's undici-based fetch rejects
- * these in Headers.append().
- *
- * The signed Authorization header looks like:
- *   AWS4-HMAC-SHA256 Credential=KEY\n/DATE/REGION\n/SERVICE/aws4_request, SignedHeaders=..., Signature=...
- *
- * The \n appears within the Credential scope path. The correct single-line form:
- *   AWS4-HMAC-SHA256 Credential=KEY/DATE/REGION/SERVICE/aws4_request, SignedHeaders=..., Signature=...
- *
- * We fix this by intercepting the SDK's internal prepareOptions to sanitize
- * headers after signing but before they hit fetch.
- */
-
-// Monkey-patch: override the global fetch used by the SDK at the lowest level
-const _origFetch = globalThis.fetch;
-let _patchActive = false;
-
-function enableFetchPatch() {
-  if (_patchActive) return;
-  _patchActive = true;
-
-  globalThis.fetch = function patchedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-    if (init?.headers && typeof init.headers === "object" && !(init.headers instanceof Headers) && !Array.isArray(init.headers)) {
-      // Plain object headers from the SDK — sanitize before they hit new Headers()
-      const sanitized: Record<string, string> = {};
-      for (const [key, value] of Object.entries(init.headers as Record<string, string>)) {
-        sanitized[key] = typeof value === "string" ? value.replace(/\r?\n/g, "") : value;
-      }
-      return _origFetch(input, { ...init, headers: sanitized });
-    }
-    return _origFetch(input, init);
-  } as typeof fetch;
-}
-
 export function getClaudeClient(): AnthropicBedrock {
   if (!_client) {
-    enableFetchPatch();
     _client = new AnthropicBedrock({
       awsAccessKey: process.env.AWS_ACCESS_KEY_ID!,
       awsSecretKey: process.env.AWS_SECRET_ACCESS_KEY!,

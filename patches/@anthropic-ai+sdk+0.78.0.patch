@@ -1,0 +1,26 @@
+diff --git a/node_modules/@anthropic-ai/sdk/internal/headers.js b/node_modules/@anthropic-ai/sdk/internal/headers.js
+index 1e717d2..a9121ae 100644
+--- a/node_modules/@anthropic-ai/sdk/internal/headers.js
++++ b/node_modules/@anthropic-ai/sdk/internal/headers.js
+@@ -62,7 +62,7 @@ const buildHeaders = (newHeaders) => {
+                 nullHeaders.add(lowerName);
+             }
+             else {
+-                targetHeaders.append(name, value);
++                targetHeaders.append(name, typeof value === 'string' ? value.replace(/\r?\n/g, '') : value);
+                 nullHeaders.delete(lowerName);
+             }
+         }
+diff --git a/node_modules/@anthropic-ai/sdk/internal/headers.mjs b/node_modules/@anthropic-ai/sdk/internal/headers.mjs
+index 94b059b..e7784c2 100644
+--- a/node_modules/@anthropic-ai/sdk/internal/headers.mjs
++++ b/node_modules/@anthropic-ai/sdk/internal/headers.mjs
+@@ -59,7 +59,7 @@ export const buildHeaders = (newHeaders) => {
+                 nullHeaders.add(lowerName);
+             }
+             else {
+-                targetHeaders.append(name, value);
++                targetHeaders.append(name, typeof value === 'string' ? value.replace(/\r?\n/g, '') : value);
+                 nullHeaders.delete(lowerName);
+             }
+         }
