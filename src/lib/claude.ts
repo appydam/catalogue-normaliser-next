@@ -1,5 +1,19 @@
 import AnthropicBedrock from "@anthropic-ai/bedrock-sdk";
 
+/**
+ * Patch Headers.prototype.append/set to strip \r\n from values.
+ * Must run at module load time (before any SDK code uses Headers).
+ * Fixes AWS SigV4 Authorization header crash on Vercel's strict undici fetch.
+ */
+const _origAppend = Headers.prototype.append;
+const _origSet = Headers.prototype.set;
+Headers.prototype.append = function (name: string, value: string) {
+  return _origAppend.call(this, name, typeof value === "string" ? value.replace(/\r?\n/g, "") : value);
+};
+Headers.prototype.set = function (name: string, value: string) {
+  return _origSet.call(this, name, typeof value === "string" ? value.replace(/\r?\n/g, "") : value);
+};
+
 let _client: AnthropicBedrock | null = null;
 
 export function getClaudeClient(): AnthropicBedrock {
