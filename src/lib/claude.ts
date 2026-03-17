@@ -1,39 +1,37 @@
 import AnthropicBedrock from "@anthropic-ai/bedrock-sdk";
 
 let _client: AnthropicBedrock | null = null;
+let _headerPatched = false;
 
 /**
- * Custom fetch wrapper that sanitizes headers containing newlines.
- * Fixes AWS SigV4 Authorization header issue on Vercel's strict Headers implementation.
+ * Patch the global Headers class to strip newlines from header values.
+ * Fixes AWS SigV4 Authorization header containing \n which Vercel's
+ * strict undici-based fetch rejects.
  */
-function sanitizedFetch(url: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  if (init?.headers) {
-    const sanitized: Record<string, string> = {};
-    if (init.headers instanceof Headers) {
-      init.headers.forEach((value, key) => {
-        sanitized[key] = value.replace(/\n/g, "");
-      });
-    } else if (Array.isArray(init.headers)) {
-      for (const [key, value] of init.headers) {
-        sanitized[key] = value.replace(/\n/g, "");
-      }
-    } else {
-      for (const [key, value] of Object.entries(init.headers)) {
-        sanitized[key] = typeof value === "string" ? value.replace(/\n/g, "") : value;
-      }
-    }
-    init = { ...init, headers: sanitized };
-  }
-  return fetch(url, init);
+function patchHeaders() {
+  if (_headerPatched) return;
+  _headerPatched = true;
+
+  const OriginalHeaders = globalThis.Headers;
+  const origAppend = OriginalHeaders.prototype.append;
+  const origSet = OriginalHeaders.prototype.set;
+
+  OriginalHeaders.prototype.append = function (name: string, value: string) {
+    return origAppend.call(this, name, typeof value === "string" ? value.replace(/[\r\n]+/g, " ") : value);
+  };
+
+  OriginalHeaders.prototype.set = function (name: string, value: string) {
+    return origSet.call(this, name, typeof value === "string" ? value.replace(/[\r\n]+/g, " ") : value);
+  };
 }
 
 export function getClaudeClient(): AnthropicBedrock {
   if (!_client) {
+    patchHeaders();
     _client = new AnthropicBedrock({
       awsAccessKey: process.env.AWS_ACCESS_KEY_ID!,
       awsSecretKey: process.env.AWS_SECRET_ACCESS_KEY!,
       awsRegion: process.env.AWS_REGION ?? "us-east-1",
-      fetch: sanitizedFetch,
     });
   }
   return _client;
