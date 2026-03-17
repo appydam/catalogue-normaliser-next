@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
 
   const client = getClaudeClient();
 
-  const stream = client.messages.stream({
+  const response = await client.messages.create({
     model: CLAUDE_MODEL,
     max_tokens: 2048,
     messages: [
@@ -74,8 +74,6 @@ Return ONLY valid JSON (no markdown, no explanation):
       },
     ],
   });
-
-  const response = await stream.finalMessage();
   const rawText = (response.content[0] as { type: string; text: string }).text;
   const parsed = JSON.parse(stripMarkdownFences(rawText));
 

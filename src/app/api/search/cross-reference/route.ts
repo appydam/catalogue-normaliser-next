@@ -66,7 +66,7 @@ export async function POST(req: NextRequest) {
 
   const productDescription = buildProductDescription(sourceProduct);
 
-  const stream = client.messages.stream({
+  const response = await client.messages.create({
     model: CLAUDE_MODEL,
     max_tokens: 512,
     system: `You are a product cross-reference assistant for Indian building materials, plumbing, sanitaryware, and hardware distributors.
@@ -87,8 +87,6 @@ Return ONLY valid JSON:
 }`,
     messages: [{ role: "user", content: productDescription }],
   });
-
-  const response = await stream.finalMessage();
   const rawText = (response.content[0] as { type: string; text: string }).text;
 
   let parsed: {

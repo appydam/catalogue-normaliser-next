@@ -73,12 +73,11 @@ export async function POST(
     const maxTokens = getExtractionMaxTokens(catalogType, body.pages.length);
 
     const client = getClaudeClient();
-    const stream = client.messages.stream({
+    const response = await client.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: maxTokens,
       messages: [{ role: "user", content }],
     });
-    const response = await stream.finalMessage();
 
     const rawText = (response.content[0] as { type: string; text: string }).text;
     const stopReason = response.stop_reason;

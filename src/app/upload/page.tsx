@@ -543,23 +543,39 @@ export default function UploadPage() {
               }
             }
 
-            // P0-3: Build category context from the page immediately before this chunk
+            // P0-3: Build category context — include the preceding page AND
+            // the nearest skipped (header/section) page before this chunk
             const firstPageNum = pageNums[0];
-            let precedingPageText = "";
+            const contextParts: string[] = [];
+
+            // Find nearest skipped page before this chunk (likely a category header)
+            for (let p = firstPageNum - 1; p >= Math.max(1, firstPageNum - 5); p--) {
+              const pc = allPageClassifications.get(p);
+              if (pc && ["cover", "lifestyle", "index", "unknown"].includes(pc.page_type)) {
+                const text = allPageTexts.get(p);
+                if (text && text.trim().length > 10) {
+                  contextParts.push(`[Section header from page ${p}]: ${text.slice(0, 300)}`);
+                }
+                break; // Only need the nearest one
+              }
+            }
+
+            // Also include the immediately preceding page text
             if (firstPageNum > 1) {
               const prevPageNum = firstPageNum - 1;
               if (allPageTexts.has(prevPageNum)) {
-                precedingPageText = allPageTexts.get(prevPageNum)!.slice(0, 500);
+                contextParts.push(`[Text from preceding page ${prevPageNum}]: ${allPageTexts.get(prevPageNum)!.slice(0, 500)}`);
               } else {
                 try {
                   const text = await extractPageText(pdfDoc, prevPageNum);
                   allPageTexts.set(prevPageNum, text);
-                  precedingPageText = text.slice(0, 500);
+                  contextParts.push(`[Text from preceding page ${prevPageNum}]: ${text.slice(0, 500)}`);
                 } catch {
                   // Non-critical
                 }
               }
             }
+            const precedingPageText = contextParts.join("\n\n");
 
             // Gather page classifications for this chunk
             const chunkPageClassifications = pageNums
@@ -572,9 +588,7 @@ export default function UploadPage() {
               body: JSON.stringify({
                 pages,
                 schema,
-                category_context: precedingPageText
-                  ? `[Text from preceding page ${firstPageNum - 1}]: ${precedingPageText}`
-                  : "",
+                category_context: precedingPageText || "",
                 chunk_index: chunkIdx,
                 total_chunks: totalChunks,
                 catalog_type: classification.catalog_type,

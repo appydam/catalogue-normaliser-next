@@ -64,12 +64,11 @@ Return ONLY valid JSON (no markdown fences, no explanation) in this exact format
       ...pageBlocks,
     ];
 
-    const stream = client.messages.stream({
+    const response = await client.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: 4096,
       messages: [{ role: "user", content }],
     });
-    const response = await stream.finalMessage();
 
     const text = stripMarkdownFences(
       (response.content[0] as { type: string; text: string }).text
@@ -93,7 +92,7 @@ Return ONLY valid JSON (no markdown fences, no explanation) in this exact format
     } catch (validationErr) {
       console.warn(`[schema] First attempt validation failed: ${validationErr}. Retrying with stricter prompt...`);
 
-      const retryStream = client.messages.stream({
+      const retryResponse = await client.messages.create({
         model: CLAUDE_MODEL,
         max_tokens: 4096,
         messages: [
@@ -110,7 +109,6 @@ Return ONLY valid JSON, no markdown.`,
           },
         ],
       });
-      const retryResponse = await retryStream.finalMessage();
       const retryText = stripMarkdownFences(
         (retryResponse.content[0] as { type: string; text: string }).text
       );
