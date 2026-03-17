@@ -111,8 +111,8 @@ export async function POST(
       } else if (page.image_base64) {
         // Fallback: upload base64 to S3 if URL not provided
         try {
-          const s3Key = `catalogs/${catalogId}/pages/page-${page.page_number}.png`;
-          const url = await uploadImageToS3(s3Key, page.image_base64, "image/png");
+          const s3Key = `catalogs/${catalogId}/pages/page-${page.page_number}.jpg`;
+          const url = await uploadImageToS3(s3Key, page.image_base64, "image/jpeg");
           pageImageMap.set(page.page_number, url);
         } catch {
           // Non-critical

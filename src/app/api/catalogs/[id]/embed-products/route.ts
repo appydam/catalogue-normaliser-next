@@ -14,7 +14,6 @@ interface ProductRow {
   raw_data: Record<string, unknown>;
   image_url: string | null;
   crop_bbox: BoundingBox | null;
-  image_embedding: number[] | null;
 }
 
 interface BboxResult {
@@ -45,21 +44,22 @@ async function getBoundingBoxes(
 
   const prompt = `You are analyzing a product catalog page image.
 
-Below is a list of products that were extracted from this page. For each product, identify the bounding box of its PRIMARY PRODUCT IMAGE (not the text label, not the whole product card — just the product photo/illustration itself).
+Below is a list of products that were extracted from this page. For each product, return the bounding box of the ENTIRE PRODUCT CARD/SECTION — including the product photo AND its name/label below it.
 
 Products to locate:
 [${productList}]
 
 Rules:
 - Return coordinates as fractions of the full image (0.0 to 1.0), where (0,0) is top-left
-- x = left edge of the product image, y = top edge
-- w = width of the product image, h = height of the product image
+- x = left edge, y = top edge, w = width, h = height
+- Include the product image AND its name/label/price text directly below or beside it
+- Each bbox should be at least 0.12 wide and 0.15 tall — if your box is smaller, expand it
 - Only include products you can confidently locate (skip if uncertain)
 - If a product appears multiple times, use the main/largest instance
-- Exclude text labels, prices, QR codes from the bounding box
+- DO NOT return tiny boxes (< 0.10 width) — those are likely just icons, not the full product
 
 Return ONLY valid JSON array (no markdown):
-[{"id":"<product_id>","bbox":{"x":0.05,"y":0.10,"w":0.20,"h":0.30}},...]`;
+[{"id":"<product_id>","bbox":{"x":0.05,"y":0.10,"w":0.22,"h":0.28}},...]`;
 
   const response = await client.messages.create({
     model: CLAUDE_MODEL,
@@ -83,15 +83,38 @@ Return ONLY valid JSON array (no markdown):
   const cleaned = stripMarkdownFences(text);
   const parsed = JSON.parse(cleaned);
   if (!Array.isArray(parsed)) return [];
-  return parsed.filter(
-    (r): r is BboxResult =>
-      r.id &&
-      r.bbox &&
-      typeof r.bbox.x === "number" &&
-      typeof r.bbox.y === "number" &&
-      typeof r.bbox.w === "number" &&
-      typeof r.bbox.h === "number"
-  );
+  return parsed
+    .filter(
+      (r): r is BboxResult =>
+        r.id &&
+        r.bbox &&
+        typeof r.bbox.x === "number" &&
+        typeof r.bbox.y === "number" &&
+        typeof r.bbox.w === "number" &&
+        typeof r.bbox.h === "number"
+    )
+    .map((r) => {
+      // Enforce minimum bbox size — expand tiny boxes to at least 15% × 18%
+      const MIN_W = 0.15;
+      const MIN_H = 0.18;
+      const bbox = { ...r.bbox };
+
+      if (bbox.w < MIN_W) {
+        const needed = MIN_W;
+        // Shift x left enough to fit the minimum width
+        bbox.x = Math.max(0, Math.min(bbox.x, 1 - needed));
+        bbox.w = needed;
+      }
+      if (bbox.h < MIN_H) {
+        const needed = MIN_H;
+        bbox.y = Math.max(0, Math.min(bbox.y, 1 - needed));
+        bbox.h = needed;
+      }
+      // Final clamp
+      if (bbox.x + bbox.w > 1) { bbox.x = Math.max(0, 1 - bbox.w); }
+      if (bbox.y + bbox.h > 1) { bbox.y = Math.max(0, 1 - bbox.h); }
+      return { ...r, bbox };
+    });
 }
 
 /**
@@ -126,14 +149,16 @@ export async function POST(
 
   const sb = getSupabase();
 
-  // Fetch all products for this catalog that need embedding
+  // Fetch all products for this catalog
+  // Don't select image_embedding (may not exist if pgvector not enabled yet)
   let query = sb
     .from("product_search_index")
-    .select("id, product_name, raw_data, image_url, crop_bbox, image_embedding")
+    .select("id, product_name, raw_data, image_url, crop_bbox")
     .eq("catalog_id", catalogId);
 
+  // If not force, only fetch products that haven't been cropped yet
   if (!body.force) {
-    query = query.is("image_embedding", null);
+    query = query.is("crop_bbox", null);
   }
 
   const { data: allProducts, error } = await query.returns<ProductRow[]>();
@@ -162,22 +187,35 @@ export async function POST(
   for (const pageNum of pageNumbers) {
     const products = byPage.get(pageNum)!;
 
-    // Find the page image URL from any product on this page
-    const pageImageUrl = products.find((p) => p.image_url)?.image_url;
+    // Find the original page image URL (prefer /pages/ URL, not /crops/)
+    const pageImageUrl = products.find((p) => p.image_url?.includes("/pages/"))?.image_url;
 
     let pageBuffer: Buffer | null = null;
     let pageBase64: string | null = null;
 
+    // Try to fetch from /pages/ URL directly
     if (pageImageUrl) {
       try {
         const s3Key = s3UrlToKey(pageImageUrl);
-        // Only fetch the original page image (not a crop URL)
-        if (s3Key.includes("/pages/")) {
-          pageBuffer = await fetchPageFromS3(s3Key);
-          pageBase64 = pageBuffer.toString("base64");
-        }
+        pageBuffer = await fetchPageFromS3(s3Key);
+        pageBase64 = pageBuffer.toString("base64");
       } catch (err) {
         console.warn(`[embed] Failed to fetch page ${pageNum} image:`, err);
+      }
+    }
+
+    // If no /pages/ URL found (all products already have crop URLs), construct the page key
+    if (!pageBuffer && catalogId && pageNum > 0) {
+      const extensions = ["jpg", "png"];
+      for (const ext of extensions) {
+        try {
+          const s3Key = `catalogs/${catalogId}/pages/page-${pageNum}.${ext}`;
+          pageBuffer = await fetchPageFromS3(s3Key);
+          pageBase64 = pageBuffer.toString("base64");
+          break;
+        } catch {
+          // Try next extension
+        }
       }
     }
 
@@ -219,30 +257,38 @@ export async function POST(
           }
         }
 
-        // Use crop base64 for embedding if available, else fall back to full page
-        const embeddingSource = cropBase64 ?? pageBase64;
-        if (!embeddingSource) {
-          totalFailed++;
-          continue;
+        // Update crop in DB immediately (even if embedding fails later)
+        if (cropUrl || bbox) {
+          const cropUpdate: Record<string, unknown> = {};
+          if (cropUrl) cropUpdate.image_url = cropUrl;
+          if (bbox) cropUpdate.crop_bbox = bbox;
+          await sb
+            .from("product_search_index")
+            .update(cropUpdate)
+            .eq("id", product.id);
         }
 
-        const textAnnotation = buildTextAnnotation(product);
-        const embedding = await generateImageEmbedding(embeddingSource, textAnnotation);
+        // Try embedding (may fail if pgvector not enabled — that's OK)
+        const embeddingSource = cropBase64 ?? pageBase64;
+        if (embeddingSource) {
+          try {
+            const textAnnotation = buildTextAnnotation(product);
+            const embedding = await generateImageEmbedding(embeddingSource, textAnnotation);
 
-        // Update product_search_index
-        const updateData: Record<string, unknown> = {
-          image_embedding: embeddingToSql(embedding),
-          embedding_generated_at: new Date().toISOString(),
-        };
-        if (cropUrl) updateData.image_url = cropUrl;
-        if (bbox) updateData.crop_bbox = bbox;
+            await sb
+              .from("product_search_index")
+              .update({
+                image_embedding: embeddingToSql(embedding),
+                embedding_generated_at: new Date().toISOString(),
+              } as never)
+              .eq("id", product.id);
 
-        await sb
-          .from("product_search_index")
-          .update(updateData)
-          .eq("id", product.id);
-
-        totalEmbedded++;
+            totalEmbedded++;
+          } catch (embedErr) {
+            // pgvector not enabled or Titan API error — crop still saved
+            console.warn(`[embed] Embedding failed for ${product.id} (crop saved):`, embedErr);
+          }
+        }
       } catch (err) {
         console.warn(`[embed] Failed for product ${product.id}:`, err);
         totalFailed++;
@@ -281,14 +327,28 @@ export async function GET(
   }
 
   const sb = getSupabase();
-  const { data } = await sb.rpc("get_embedding_stats", { p_catalog_id: catalogId });
 
-  const stats = Array.isArray(data) && data.length > 0 ? data[0] : { total: 0, embedded: 0, pending: 0 };
+  // Count total vs cropped products (doesn't require pgvector)
+  const { data: totalData } = await sb
+    .from("product_search_index")
+    .select("id", { count: "exact", head: true })
+    .eq("catalog_id", catalogId);
+
+  const { data: croppedData } = await sb
+    .from("product_search_index")
+    .select("id", { count: "exact", head: true })
+    .eq("catalog_id", catalogId)
+    .not("crop_bbox", "is", null);
+
+  const total = (totalData as unknown as { count: number })?.count ?? 0;
+  const cropped = (croppedData as unknown as { count: number })?.count ?? 0;
 
   return NextResponse.json({
     catalog_id: catalogId,
-    ...stats,
-    ready: stats.embedded > 0,
-    progress_pct: stats.total > 0 ? Math.round((stats.embedded / stats.total) * 100) : 0,
+    total,
+    cropped,
+    pending: total - cropped,
+    ready: cropped > 0,
+    progress_pct: total > 0 ? Math.round((cropped / total) * 100) : 0,
   });
 }

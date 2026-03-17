@@ -60,6 +60,8 @@ async function loadPdfJs(): Promise<{ getDocument: (src: { data: ArrayBuffer }) 
   return pdfjs;
 }
 
+const MAX_IMAGE_BYTES = 4.5 * 1024 * 1024; // 4.5MB limit (Claude max is 5MB, leave headroom)
+
 async function renderPageToBase64(pdfDoc: PdfDocument, pageNum: number): Promise<string> {
   const page = await pdfDoc.getPage(pageNum);
   const viewport = page.getViewport({ scale: RENDER_SCALE });
@@ -68,7 +70,22 @@ async function renderPageToBase64(pdfDoc: PdfDocument, pageNum: number): Promise
   canvas.height = viewport.height;
   const ctx = canvas.getContext("2d")!;
   await page.render({ canvasContext: ctx, viewport }).promise;
-  const dataUrl = canvas.toDataURL("image/png");
+
+  // Try JPEG first (much smaller), fall back to lower quality if still too large
+  for (const quality of [0.85, 0.7, 0.5]) {
+    const dataUrl = canvas.toDataURL("image/jpeg", quality);
+    const base64 = dataUrl.split(",")[1];
+    const sizeBytes = Math.ceil(base64.length * 0.75); // base64 → bytes
+    if (sizeBytes <= MAX_IMAGE_BYTES) return base64;
+  }
+
+  // Last resort: scale down the canvas by 50% and retry
+  const smallCanvas = document.createElement("canvas");
+  smallCanvas.width = Math.round(canvas.width / 2);
+  smallCanvas.height = Math.round(canvas.height / 2);
+  const smallCtx = smallCanvas.getContext("2d")!;
+  smallCtx.drawImage(canvas, 0, 0, smallCanvas.width, smallCanvas.height);
+  const dataUrl = smallCanvas.toDataURL("image/jpeg", 0.7);
   return dataUrl.split(",")[1];
 }
 
@@ -83,7 +100,7 @@ async function uploadPageImageToS3(s3Key: string, base64: string): Promise<strin
       const res = await fetch("/api/upload-page-image", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: s3Key, image_base64: base64, content_type: "image/png" }),
+        body: JSON.stringify({ key: s3Key, image_base64: base64, content_type: "image/jpeg" }),
         signal: controller.signal,
       });
       clearTimeout(timeout);
@@ -511,7 +528,7 @@ export default function UploadPage() {
             for (const pageNum of pageNums) {
               const base64 = await renderPageToBase64(pdfDoc, pageNum);
               const text = await extractPageText(pdfDoc, pageNum);
-              const s3Key = `catalogs/${catalog_id}/pages/page-${pageNum}.png`;
+              const s3Key = `catalogs/${catalog_id}/pages/page-${pageNum}.jpg`;
               const imageUrl = await uploadPageImageToS3(s3Key, base64);
               if (imageUrl) {
                 pages.push({ page_number: pageNum, image_url: imageUrl, text });

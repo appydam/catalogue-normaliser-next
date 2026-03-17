@@ -168,11 +168,9 @@ export async function POST(req: NextRequest) {
   const sb = getSupabase();
 
   // ── Check if vector search is available ──────────────────────────────────
-  const { data: statsData } = await sb.rpc("get_embedding_stats", {
-    p_catalog_id: catalogId ?? "00000000-0000-0000-0000-000000000000",
-  });
-  const stats = Array.isArray(statsData) && statsData.length > 0 ? statsData[0] : null;
-  const vectorAvailable = catalogId ? (stats?.embedded ?? 0) > 0 : false;
+  // For now, vector search requires pgvector extension to be enabled
+  // Just set to false — will be enabled when pgvector is set up
+  const vectorAvailable = false;
 
   // ── Step 1: Claude Vision describes the product ───────────────────────────
   const client = getClaudeClient();
@@ -202,9 +200,9 @@ Identify the PRIMARY product and extract maximum details visible in the image.
 Return ONLY valid JSON (no markdown):
 {
   "description": "detailed description of what you see for display to user",
-  "search_query": "optimized keywords for full-text search",
+  "search_query": "3-5 core keywords only (product type + material/finish). Do NOT include generic terms like wall, mount, holder, hose. Example: 'health faucet chrome ABS'",
   "category": "product category (e.g. 'wash basin', 'health faucet', 'EWC') or null",
-  "tsquery": "PostgreSQL tsquery using & for AND, | for OR",
+  "tsquery": "PostgreSQL tsquery — use | (OR) between variant names, & (AND) only for product type. Example: 'health & faucet' or 'wash & basin | washbasin'. Keep it SHORT, 2-4 terms max.",
   "visible_specs": {
     "material": "e.g. ABS, stainless steel, ceramic or null",
     "finish": "e.g. chrome, matte white or null",
@@ -283,15 +281,23 @@ Return ONLY valid JSON (no markdown):
 
     const keywordCountCases = allKeywords.map((kw) => `CASE WHEN ${kwMatchExpr(kw)} THEN 1 ELSE 0 END`);
     const keywordCountExpr = keywordCountCases.length > 0 ? `(${keywordCountCases.join(" + ")})` : "0";
-    const minMatches = allKeywords.length <= 2 ? 1 : Math.ceil(allKeywords.length / 2);
+    // Image search: be very lenient — match if at least 1 keyword hits
+    const minMatches = 1;
     const ilikeCondition = allKeywords.length > 0 ? `(${keywordCountExpr} >= ${minMatches})` : "FALSE";
     const catFilter = cat ? `AND (psi.category ILIKE '%${escapeILIKE(cat)}%' OR psi.sub_category ILIKE '%${escapeILIKE(cat)}%')` : "";
     const catalogFilter = catalogId ? `AND psi.catalog_id = '${catalogId}'` : "";
 
-    const tsCondition = tsquery ? `psi.search_text @@ to_tsquery('english', '${tsquery}')` : "FALSE";
-    const tsRank = tsquery ? `ts_rank(psi.search_text, to_tsquery('english', '${tsquery}'))` : "0";
+    // Use websearch_to_tsquery which handles OR-like matching better than to_tsquery
+    const sanitizedSearch = escapeSQLString(searchQuery);
     const sanitizedEnhanced = escapeSQLString(normalized.normalized);
     const wsCondition = `psi.search_text @@ websearch_to_tsquery('english', '${sanitizedEnhanced}')`;
+    const wsCondition2 = `psi.search_text @@ websearch_to_tsquery('english', '${sanitizedSearch}')`;
+    const tsRank = `ts_rank(psi.search_text, websearch_to_tsquery('english', '${sanitizedEnhanced}'))`;
+
+    // Also try a simple category-only search as the broadest net
+    const catOnlyCondition = cat
+      ? `(psi.category ILIKE '%${escapeILIKE(cat)}%' OR psi.sub_category ILIKE '%${escapeILIKE(cat)}%')`
+      : "FALSE";
 
     const sql = `
       WITH ts_results AS (
@@ -302,7 +308,7 @@ Return ONLY valid JSON (no markdown):
           (100.0 + ${tsRank} * 100) as relevance
         FROM product_search_index psi
         JOIN master_catalogs c ON c.id = psi.catalog_id
-        WHERE (${tsCondition} OR ${wsCondition}) ${catFilter} ${catalogFilter}
+        WHERE (${wsCondition} OR ${wsCondition2}) ${catalogFilter}
         LIMIT 30
       ),
       ilike_results AS (
@@ -313,14 +319,28 @@ Return ONLY valid JSON (no markdown):
           (${keywordCountExpr}::float / ${Math.max(allKeywords.length, 1)}.0 * 90) as relevance
         FROM product_search_index psi
         JOIN master_catalogs c ON c.id = psi.catalog_id
-        WHERE ${ilikeCondition} ${catFilter} ${catalogFilter}
+        WHERE ${ilikeCondition} ${catalogFilter}
           AND psi.id NOT IN (SELECT id FROM ts_results)
         LIMIT 30
+      ),
+      cat_results AS (
+        SELECT
+          psi.id, psi.catalog_id, psi.product_name, psi.category, psi.sub_category,
+          psi.description, psi.price, psi.price_unit, psi.image_url, psi.raw_data,
+          c.company_name, c.catalog_name,
+          50.0 as relevance
+        FROM product_search_index psi
+        JOIN master_catalogs c ON c.id = psi.catalog_id
+        WHERE ${catOnlyCondition} ${catalogFilter}
+          AND psi.id NOT IN (SELECT id FROM ts_results UNION SELECT id FROM ilike_results)
+        LIMIT 20
       )
       SELECT * FROM (
         SELECT * FROM ts_results
         UNION ALL
         SELECT * FROM ilike_results
+        UNION ALL
+        SELECT * FROM cat_results
       ) combined
       ORDER BY relevance DESC
       LIMIT 30

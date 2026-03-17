@@ -11,12 +11,16 @@ const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"]
 export const metadata: Metadata = {
   title: "CatalogAI – Intelligent Product Catalog Extraction",
   description: "Upload product catalog PDFs, extract all data with AI, and search across catalogs.",
+  icons: {
+    icon: "/icon.svg",
+    shortcut: "/icon.svg",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className="h-full">
-      <body className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
+      <body suppressHydrationWarning className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
         <TooltipProvider>
           <div className="flex h-full">
             <Sidebar />

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { Icon } from "./ui/icon";
 import { cn } from "@/lib/cn";
@@ -11,6 +12,10 @@ const NAV_ITEMS: { href: string; label: string; icon: IconName; matchExact?: boo
   { href: "/", label: "Catalogs", icon: "catalog", matchExact: true },
   { href: "/upload", label: "Upload Catalog", icon: "upload" },
   { href: "/search", label: "Search Products", icon: "search" },
+  { href: "/quotations", label: "Quick Quotation", icon: "receipt" },
+  { href: "/procurement", label: "Procurement", icon: "procurement" },
+  { href: "/schemes", label: "Scheme Tracker", icon: "scheme" },
+  { href: "/insights", label: "Demand Intelligence", icon: "insights" },
 ];
 
 export function Sidebar() {
@@ -27,9 +32,13 @@ export function Sidebar() {
       {/* Brand */}
       <div className="px-5 py-5 border-b border-slate-100">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center shrink-0 shadow-sm shadow-indigo-200/50">
-            <Icon name="sparkle" className="w-4 h-4 text-white" strokeWidth={2} />
-          </div>
+          <Image
+            src="/logo.svg"
+            alt="CatalogAI logo"
+            width={32}
+            height={32}
+            className="shrink-0"
+          />
           <div>
             <h1 className="text-sm font-bold text-slate-900 leading-none tracking-tight">CatalogAI</h1>
             <p className="text-[11px] text-slate-400 mt-0.5">AI-Powered Extraction</p>

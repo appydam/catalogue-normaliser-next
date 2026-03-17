@@ -16,6 +16,52 @@ import { toast } from "sonner";
 
 const PAGE_SIZE = 50;
 
+interface TallyFieldMapping {
+  stockItemName: string;
+  parent: string;
+  category: string;
+  baseUnit: string;
+  rate: string;
+  hsnCode?: string;
+  gstRate?: string;
+}
+
+const TALLY_FIELDS: { key: keyof TallyFieldMapping; label: string; required: boolean }[] = [
+  { key: "stockItemName", label: "Stock Item Name", required: true },
+  { key: "parent", label: "Stock Group", required: true },
+  { key: "category", label: "Category", required: true },
+  { key: "baseUnit", label: "Unit", required: true },
+  { key: "rate", label: "Rate / Price", required: true },
+  { key: "hsnCode", label: "HSN Code", required: false },
+  { key: "gstRate", label: "GST Rate", required: false },
+];
+
+const AUTO_SUGGEST_PATTERNS: Record<keyof TallyFieldMapping, RegExp> = {
+  stockItemName: /product.?name|item.?name|description|product.?description|name/i,
+  parent: /stock.?group|group|brand/i,
+  category: /category|sub.?category|type/i,
+  baseUnit: /unit|uom|base.?unit|measurement/i,
+  rate: /price|rate|mrp|cost|amount/i,
+  hsnCode: /hsn|hsn.?code|sac/i,
+  gstRate: /gst|tax|gst.?rate|tax.?rate/i,
+};
+
+function autoSuggestMapping(columns: string[]): Partial<TallyFieldMapping> {
+  const result: Partial<TallyFieldMapping> = {};
+  for (const field of TALLY_FIELDS) {
+    const pattern = AUTO_SUGGEST_PATTERNS[field.key];
+    const match = columns.find((col) => pattern.test(col));
+    if (match) {
+      result[field.key] = match;
+    }
+  }
+  return result;
+}
+
+function getTallyStorageKey(catalogId: string): string {
+  return `tally_mapping_${catalogId}`;
+}
+
 export default function CatalogDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
@@ -33,7 +79,9 @@ export default function CatalogDetailPage() {
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState("");
   const [savingName, setSavingName] = useState(false);
-
+  const [tallyDialogOpen, setTallyDialogOpen] = useState(false);
+  const [tallyMapping, setTallyMapping] = useState<Partial<TallyFieldMapping>>({});
+  const [tallyExporting, setTallyExporting] = useState(false);
   const schema = catalog?.schema_definition as { columns: ColumnDefinition[] } | undefined;
   const allCols = schema?.columns.map((c) => c.name) ?? [];
 
@@ -182,6 +230,72 @@ export default function CatalogDetailPage() {
     }
   }
 
+  function openTallyDialog() {
+    const stored = localStorage.getItem(getTallyStorageKey(id));
+    if (stored) {
+      try {
+        setTallyMapping(JSON.parse(stored));
+      } catch {
+        setTallyMapping(autoSuggestMapping(allCols));
+      }
+    } else {
+      setTallyMapping(autoSuggestMapping(allCols));
+    }
+    setTallyDialogOpen(true);
+  }
+
+  function updateTallyField(key: keyof TallyFieldMapping, value: string) {
+    setTallyMapping((prev) => {
+      const next = { ...prev };
+      if (value) {
+        next[key] = value;
+      } else {
+        delete next[key];
+      }
+      return next;
+    });
+  }
+
+  async function exportTally() {
+    const required: (keyof TallyFieldMapping)[] = ["stockItemName", "parent", "category", "baseUnit", "rate"];
+    for (const key of required) {
+      if (!tallyMapping[key]) {
+        toast.error(`Please select a column for "${TALLY_FIELDS.find((f) => f.key === key)!.label}"`);
+        return;
+      }
+    }
+
+    const finalMapping = tallyMapping as TallyFieldMapping;
+    localStorage.setItem(getTallyStorageKey(id), JSON.stringify(finalMapping));
+
+    setTallyExporting(true);
+    toast.info("Generating Tally XML...");
+    try {
+      const mappingParam = encodeURIComponent(JSON.stringify(finalMapping));
+      const res = await fetch(`/api/catalogs/${id}/export/tally?mapping=${mappingParam}`);
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Export failed" }));
+        toast.error(err.error || "Export failed");
+        return;
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${catalog?.catalog_name ?? "catalog"}_tally_import.xml`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setTallyDialogOpen(false);
+      toast.success("Tally XML exported");
+    } catch {
+      toast.error("Failed to export Tally XML");
+    } finally {
+      setTallyExporting(false);
+    }
+  }
+
   // ── Render ────────────────────────────────────────────────────────────────────
   if (loading) return <PageSkeleton />;
   if (!catalog) return null;
@@ -240,10 +354,22 @@ export default function CatalogDetailPage() {
         </div>
         <div className="flex items-center gap-2">
           {(catalog.processing_status === "completed" || catalog.processing_status === "completed_with_warnings") && (
-            <Button variant="secondary" size="sm" onClick={exportCsv}>
-              <Icon name="download" className="w-4 h-4" />
-              Export CSV
-            </Button>
+            <>
+              <Link href={`/catalog/${id}/diff`}>
+                <Button variant="secondary" size="sm" disabled={!catalog.parent_catalog_id}>
+                  <Icon name="diff" className="w-4 h-4" />
+                  Compare Versions
+                </Button>
+              </Link>
+              <Button variant="secondary" size="sm" onClick={exportCsv}>
+                <Icon name="download" className="w-4 h-4" />
+                Export CSV
+              </Button>
+              <Button variant="secondary" size="sm" onClick={openTallyDialog}>
+                <Icon name="download" className="w-4 h-4" />
+                Export to Tally
+              </Button>
+            </>
           )}
           <Button variant="destructive" size="sm" onClick={() => setDeleteDialogOpen(true)} disabled={deleting}>
             <Icon name="trash" className="w-4 h-4" />
@@ -267,6 +393,46 @@ export default function CatalogDetailPage() {
             </DialogClose>
             <Button variant="destructive" onClick={handleDelete} disabled={deleting}>
               {deleting ? "Deleting…" : "Delete Catalog"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Tally Export Dialog */}
+      <Dialog open={tallyDialogOpen} onOpenChange={setTallyDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Export to Tally</DialogTitle>
+            <DialogDescription>
+              Map your catalog columns to Tally Stock Item fields. Required fields are marked with *.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 my-2">
+            {TALLY_FIELDS.map((field) => (
+              <div key={field.key} className="flex items-center gap-3">
+                <label className="text-sm text-slate-700 w-36 shrink-0 font-medium">
+                  {field.label}{field.required && <span className="text-red-500 ml-0.5">*</span>}
+                </label>
+                <select
+                  value={tallyMapping[field.key] ?? ""}
+                  onChange={(e) => updateTallyField(field.key, e.target.value)}
+                  className="flex-1 h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-300"
+                >
+                  <option value="">{field.required ? "Select column..." : "None"}</option>
+                  {allCols.map((col) => (
+                    <option key={col} value={col}>{col}</option>
+                  ))}
+                </select>
+              </div>
+            ))}
+          </div>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="secondary">Cancel</Button>
+            </DialogClose>
+            <Button onClick={exportTally} disabled={tallyExporting}>
+              <Icon name="download" className="w-4 h-4" />
+              {tallyExporting ? "Exporting..." : "Export"}
             </Button>
           </DialogFooter>
         </DialogContent>

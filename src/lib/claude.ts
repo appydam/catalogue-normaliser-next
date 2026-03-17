@@ -89,7 +89,7 @@ export async function buildPageContentBlocks(
     if (base64) {
       blocks.push({
         type: "image",
-        source: { type: "base64", media_type: "image/png", data: base64 },
+        source: { type: "base64", media_type: "image/jpeg", data: base64 },
       });
     }
 

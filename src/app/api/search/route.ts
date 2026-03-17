@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getClaudeClient, CLAUDE_MODEL, stripMarkdownFences } from "@/lib/claude";
 import { getSupabase } from "@/lib/supabase";
 import { isValidUUID, escapeSQLString } from "@/lib/types";
+import { needsTranslation, translateToEnglish } from "@/lib/translate";
 
 export const maxDuration = 60;
 
@@ -24,9 +25,18 @@ interface CatalogSchema {
  * specific catalog is selected).
  */
 export async function POST(req: NextRequest) {
-  const { query, catalog_id, limit = 30, offset = 0 } = await req.json();
-  if (!query?.trim()) {
+  const { query: rawQuery, catalog_id, limit = 30, offset = 0 } = await req.json();
+  if (!rawQuery?.trim()) {
     return NextResponse.json({ error: "Query is required" }, { status: 400 });
+  }
+
+  // Hindi/Hinglish translation — detect and translate before processing
+  let query = rawQuery.trim();
+  let translation: { translated: string; original: string; language: string } | null = null;
+
+  if (needsTranslation(query)) {
+    translation = await translateToEnglish(query);
+    query = translation.translated;
   }
 
   const sb = getSupabase();
@@ -138,8 +148,13 @@ export async function POST(req: NextRequest) {
     total = t;
   }
 
+  // Non-blocking: log search for demand intelligence analytics
+  logSearch(sb, query, total, "web");
+
   return NextResponse.json({
     query,
+    original_query: translation ? translation.original : undefined,
+    translated_from: translation ? translation.language : undefined,
     ai_interpretation: parsed.explanation,
     search_mode: parsed.search_mode,
     sql_filter: parsed.sql_where || null,
@@ -151,6 +166,37 @@ export async function POST(req: NextRequest) {
     total_results: total,
     results,
   });
+}
+
+// ── Non-blocking search logging for Demand Intelligence ───────────────────────
+
+function logSearch(sb: ReturnType<typeof getSupabase>, query: string, resultsCount: number, source: string) {
+  const safeQuery = escapeSQLString(query);
+  const safeSource = escapeSQLString(source);
+  const safeCount = Math.max(0, Math.floor(resultsCount));
+
+  // Fire-and-forget: create table if needed, then insert
+  Promise.resolve(
+    sb.rpc("exec_sql", {
+      query: `
+        CREATE TABLE IF NOT EXISTS search_logs (
+          id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+          query TEXT NOT NULL,
+          results_count INTEGER NOT NULL DEFAULT 0,
+          source TEXT NOT NULL DEFAULT 'web',
+          created_at TIMESTAMPTZ DEFAULT now()
+        )
+      `,
+    })
+  )
+    .then(() =>
+      sb.rpc("exec_sql", {
+        query: `INSERT INTO search_logs (query, results_count, source) VALUES ('${safeQuery}', ${safeCount}, '${safeSource}')`,
+      })
+    )
+    .catch((err: unknown) => {
+      console.error("[search-log] Failed to log search:", err);
+    });
 }
 
 // ── Claude system prompt ──────────────────────────────────────────────────────

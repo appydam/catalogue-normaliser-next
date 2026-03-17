@@ -816,12 +816,12 @@ function ResultCard({
         <div className="flex items-start gap-4">
           {/* Product image thumbnail */}
           {item.image_url && (
-            <div className="relative w-16 h-16 rounded-lg overflow-hidden bg-slate-100 shrink-0">
-              <Image
+            <div className="w-16 h-16 rounded-lg overflow-hidden bg-slate-100 shrink-0">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
                 src={item.image_url}
                 alt={item.product_name ?? ""}
-                fill
-                className="object-cover"
+                className="w-full h-full object-cover"
               />
             </div>
           )}
@@ -919,12 +919,12 @@ function ResultCard({
           <div className="flex gap-4">
             {/* Large image in expanded view */}
             {item.image_url && (
-              <div className="relative w-40 h-40 rounded-xl overflow-hidden bg-slate-100 shrink-0">
-                <Image
+              <div className="w-40 h-40 rounded-xl overflow-hidden bg-slate-100 shrink-0">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
                   src={item.image_url}
                   alt={item.product_name ?? ""}
-                  fill
-                  className="object-contain"
+                  className="w-full h-full object-contain"
                 />
               </div>
             )}
@@ -1055,12 +1055,12 @@ function CrossReferencePanel({
           <Card key={ref.id} className="p-3 hover:bg-slate-50 transition-colors">
             <div className="flex items-start gap-3">
               {ref.image_url && (
-                <div className="relative w-10 h-10 rounded-lg overflow-hidden bg-slate-100 shrink-0">
-                  <Image
+                <div className="w-10 h-10 rounded-lg overflow-hidden bg-slate-100 shrink-0">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
                     src={ref.image_url}
                     alt={ref.product_name ?? ""}
-                    fill
-                    className="object-cover"
+                    className="w-full h-full object-cover"
                   />
                 </div>
               )}
