@@ -9,8 +9,8 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "CatalogAI – Intelligent Product Catalog Extraction",
-  description: "Upload product catalog PDFs, extract all data with AI, and search across catalogs.",
+  title: "CatalogAI – Your Supplier Intelligence Platform",
+  description: "Turn supplier catalogs into business intelligence. Extract products from PDFs, compare prices across brands, track schemes, and optimize procurement.",
   icons: {
     icon: "/icon.svg",
     shortcut: "/icon.svg",

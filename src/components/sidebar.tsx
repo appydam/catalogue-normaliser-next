@@ -41,7 +41,7 @@ export function Sidebar() {
           />
           <div>
             <h1 className="text-sm font-bold text-slate-900 leading-none tracking-tight">CatalogAI</h1>
-            <p className="text-[11px] text-slate-400 mt-0.5">AI-Powered Extraction</p>
+            <p className="text-[11px] text-slate-400 mt-0.5">Your Supplier Intelligence Platform</p>
           </div>
         </div>
       </div>
