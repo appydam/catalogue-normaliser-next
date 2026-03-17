@@ -15,6 +15,17 @@ export const metadata: Metadata = {
     icon: "/icon.svg",
     shortcut: "/icon.svg",
   },
+  openGraph: {
+    title: "CatalogAI – Your Supplier Intelligence Platform",
+    description: "Turn supplier catalogs into business intelligence. Extract products from PDFs, compare prices across brands, track schemes, and optimize procurement.",
+    siteName: "CatalogAI",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "CatalogAI – Your Supplier Intelligence Platform",
+    description: "Turn supplier catalogs into business intelligence.",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
