@@ -93,6 +93,7 @@ export interface SearchResultItem {
   catalog_name: string;
   raw_data: Record<string, unknown>;
   relevance: number;
+  similarity?: number; // 0-1 cosine similarity (vector search only)
 }
 
 // ─── Validation helpers ──────────────────────────────────────────────────────

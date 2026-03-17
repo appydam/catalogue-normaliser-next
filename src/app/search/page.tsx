@@ -9,6 +9,7 @@ import { Card } from "@/components/ui/card";
 import { Icon } from "@/components/ui/icon";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
+import { useSpeechRecognition } from "@/hooks/use-speech-recognition";
 
 type SearchMode = "text" | "image";
 
@@ -21,15 +22,49 @@ interface CatalogOption {
 
 interface SearchResponse {
   query: string;
+  original_query?: string;
+  translated_from?: string;
   ai_interpretation?: string;
-  search_mode?: "catalog_specific" | "global";
+  search_mode?: "catalog_specific" | "global" | "vector" | "text";
   sql_filter?: string | null;
   catalog_context?: { catalog_id: string; catalog_name: string; company_name: string } | null;
   query_image_url?: string;
   ai_description?: string;
+  vector_available?: boolean;
+  visible_specs?: Record<string, string | null> | null;
+  ai_rerank?: {
+    explanation: string;
+    confidence: "high" | "medium" | "low";
+    visual_variants: boolean;
+  } | null;
   parsed_filters?: Record<string, unknown>;
   results: SearchResultItem[];
   total_results: number;
+}
+
+interface CrossRefResult {
+  id: string;
+  catalog_id: string;
+  product_name: string | null;
+  category: string | null;
+  sub_category: string | null;
+  description: string | null;
+  price: number | null;
+  price_unit: string | null;
+  image_url: string | null;
+  company_name: string;
+  catalog_name: string;
+  raw_data: Record<string, unknown>;
+  price_diff: number | null;
+  price_diff_pct: number | null;
+}
+
+interface CrossRefResponse {
+  source_product: Record<string, unknown>;
+  product_type: string;
+  key_specs: Record<string, string>;
+  cross_references: CrossRefResult[];
+  total: number;
 }
 
 export default function SearchPage() {
@@ -55,6 +90,35 @@ export default function SearchPage() {
 
   // Dynamic suggestions from actual database
   const [suggestions, setSuggestions] = useState<string[]>([]);
+
+  // Cross-reference state
+  const [crossRefId, setCrossRefId] = useState<string | null>(null);
+  const [crossRefLoading, setCrossRefLoading] = useState(false);
+  const [crossRefData, setCrossRefData] = useState<CrossRefResponse | null>(null);
+
+  // Voice search
+  const {
+    isListening,
+    isSupported: voiceSupported,
+    transcript,
+    startListening,
+    stopListening,
+  } = useSpeechRecognition({
+    lang: "en-IN",
+    onResult: (text) => {
+      setQuery(text);
+      // Auto-search after voice input
+      handleTextSearch(text);
+    },
+    onError: (err) => toast.error(err),
+  });
+
+  // Update input field with interim speech results
+  useEffect(() => {
+    if (isListening && transcript) {
+      setQuery(transcript);
+    }
+  }, [isListening, transcript]);
 
   // Fetch catalogs for the selector
   useEffect(() => {
@@ -104,6 +168,8 @@ export default function SearchPage() {
     setLoading(true);
     setResponse(null);
     setExpandedId(null);
+    setCrossRefId(null);
+    setCrossRefData(null);
 
     try {
       const body: Record<string, unknown> = { query: searchQuery };
@@ -128,6 +194,43 @@ export default function SearchPage() {
     }
   }
 
+  // ── Cross-reference search ─────────────────────────────────────────────────
+  async function handleCrossReference(productId: string, item: SearchResultItem) {
+    if (crossRefId === productId) {
+      // Toggle off
+      setCrossRefId(null);
+      setCrossRefData(null);
+      return;
+    }
+
+    setCrossRefId(productId);
+    setCrossRefLoading(true);
+    setCrossRefData(null);
+
+    try {
+      const res = await fetch("/api/search/cross-reference", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          product_id: productId,
+          source_catalog_id: item.catalog_id,
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error("Cross-reference search failed");
+      }
+
+      const data: CrossRefResponse = await res.json();
+      setCrossRefData(data);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Cross-reference failed");
+      setCrossRefId(null);
+    } finally {
+      setCrossRefLoading(false);
+    }
+  }
+
   // ── Image search ───────────────────────────────────────────────────────────
   function handleImageSelect(file: File) {
     if (!file.type.startsWith("image/")) {
@@ -146,6 +249,8 @@ export default function SearchPage() {
     setLoading(true);
     setResponse(null);
     setExpandedId(null);
+    setCrossRefId(null);
+    setCrossRefData(null);
 
     try {
       const formData = new FormData();
@@ -191,7 +296,7 @@ export default function SearchPage() {
       <div className="mb-6">
         <h2 className="text-2xl font-bold text-slate-900">Search Products</h2>
         <p className="text-sm text-slate-500 mt-0.5">
-          Search in natural language — AI understands product specs, sizes, and types.
+          Search in natural language — supports English, Hindi &amp; Hinglish. Try voice search!
         </p>
       </div>
 
@@ -295,7 +400,7 @@ export default function SearchPage() {
             </div>
           </div>
 
-          {/* Search input */}
+          {/* Search input with voice button */}
           <div className="relative mb-4">
             <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
               {loading ? (
@@ -331,11 +436,25 @@ export default function SearchPage() {
               placeholder={
                 selectedCatalog
                   ? "e.g. quickfit pipes 180mm 8 kgf pressure"
-                  : "e.g. CPVC fittings 25mm coupler"
+                  : 'e.g. "3 inch PVC pipe" or "तीन इंच पाइप" or "teen inch pipe ka rate"'
               }
-              className="w-full pl-12 pr-4 py-4 bg-white border border-slate-200 rounded-2xl text-slate-800 placeholder-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-transparent shadow-sm transition-shadow"
+              className="w-full pl-12 pr-28 py-4 bg-white border border-slate-200 rounded-2xl text-slate-800 placeholder-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-transparent shadow-sm transition-shadow"
             />
-            <div className="absolute right-3 inset-y-3">
+            <div className="absolute right-3 inset-y-3 flex items-center gap-1.5">
+              {/* Voice search button */}
+              {voiceSupported && (
+                <button
+                  onClick={isListening ? stopListening : startListening}
+                  className={`h-full aspect-square flex items-center justify-center rounded-xl transition-all ${
+                    isListening
+                      ? "bg-red-50 text-red-500 ring-2 ring-red-200 animate-pulse"
+                      : "text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                  }`}
+                  title={isListening ? "Stop listening" : "Voice search (Hindi/English)"}
+                >
+                  <Icon name="microphone" className="w-5 h-5" />
+                </button>
+              )}
               <Button
                 onClick={() => handleTextSearch()}
                 disabled={!query.trim() || loading}
@@ -346,6 +465,22 @@ export default function SearchPage() {
               </Button>
             </div>
           </div>
+
+          {/* Voice listening indicator */}
+          {isListening && (
+            <div className="mb-4 flex items-center gap-2 p-3 bg-red-50 border border-red-100 rounded-xl">
+              <div className="w-3 h-3 rounded-full bg-red-400 animate-pulse" />
+              <span className="text-sm text-red-600 font-medium">
+                Listening... speak now
+              </span>
+              <button
+                onClick={stopListening}
+                className="ml-auto text-xs text-red-500 hover:text-red-700 font-medium"
+              >
+                Stop
+              </button>
+            </div>
+          )}
 
           {!submitted && suggestions.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-8">
@@ -441,6 +576,38 @@ export default function SearchPage() {
                         </p>
                       </div>
                     )}
+                    {/* Vector search badge */}
+                    {response?.search_mode === "vector" && (
+                      <div className="mt-2 flex items-center gap-1.5">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-violet-100 text-violet-700 text-xs font-medium">
+                          <Icon name="sparkle" className="w-3 h-3" />
+                          Visual similarity search
+                        </span>
+                        {response.ai_rerank && (
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                            response.ai_rerank.confidence === "high" ? "bg-green-100 text-green-700" :
+                            response.ai_rerank.confidence === "medium" ? "bg-amber-100 text-amber-700" :
+                            "bg-slate-100 text-slate-600"
+                          }`}>
+                            {response.ai_rerank.confidence} confidence
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {/* AI re-rank explanation */}
+                    {response?.ai_rerank?.explanation && response.search_mode === "vector" && (
+                      <div className="mt-2 p-2.5 bg-violet-50 rounded-lg">
+                        <p className="text-xs text-violet-600">{response.ai_rerank.explanation}</p>
+                      </div>
+                    )}
+                    {/* Visual variants warning */}
+                    {response?.ai_rerank?.visual_variants && (
+                      <div className="mt-2 p-2.5 bg-amber-50 border border-amber-200 rounded-lg">
+                        <p className="text-xs text-amber-700 font-medium">
+                          Multiple visually similar products found — check specifications carefully to pick the right variant.
+                        </p>
+                      </div>
+                    )}
                     <div className="flex gap-2 mt-3">
                       <Button onClick={handleImageSearch} disabled={loading} size="sm">
                         {loading ? "Searching..." : "Search by Image"}
@@ -467,6 +634,23 @@ export default function SearchPage() {
       )}
 
       {/* ── Shared results section ───────────────────────────────────────────── */}
+
+      {/* Translation indicator */}
+      {response?.translated_from && response.original_query && (
+        <div className="mb-4">
+          <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-100 rounded-xl">
+            <span className="text-base">&#x1F1EE;&#x1F1F3;</span>
+            <div className="text-xs">
+              <span className="text-amber-700 font-medium">
+                Translated from {response.translated_from === "hindi" ? "Hindi" : "Hinglish"}:
+              </span>{" "}
+              <span className="text-amber-600">
+                &ldquo;{response.original_query}&rdquo; &rarr; &ldquo;{response.query}&rdquo;
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* AI interpretation badge */}
       {response?.ai_interpretation && (
@@ -542,14 +726,29 @@ export default function SearchPage() {
           ) : (
             <div className="space-y-3">
               {response.results.map((item) => (
-                <ResultCard
-                  key={item.id}
-                  item={item}
-                  expanded={expandedId === item.id}
-                  onToggle={() =>
-                    setExpandedId(expandedId === item.id ? null : item.id)
-                  }
-                />
+                <div key={item.id}>
+                  <ResultCard
+                    item={item}
+                    expanded={expandedId === item.id}
+                    showSimilarity={response.search_mode === "vector"}
+                    onToggle={() =>
+                      setExpandedId(expandedId === item.id ? null : item.id)
+                    }
+                    onCrossReference={() => handleCrossReference(item.id, item)}
+                    crossRefActive={crossRefId === item.id}
+                    crossRefLoading={crossRefId === item.id && crossRefLoading}
+                  />
+
+                  {/* Cross-reference results panel */}
+                  {crossRefId === item.id && (crossRefLoading || crossRefData) && (
+                    <CrossReferencePanel
+                      loading={crossRefLoading}
+                      data={crossRefData}
+                      sourcePrice={Number(item.price) || null}
+                      sourceName={item.product_name}
+                    />
+                  )}
+                </div>
               ))}
             </div>
           )}
@@ -595,11 +794,19 @@ function FilterChip({ label, value }: { label: string; value: unknown }) {
 function ResultCard({
   item,
   expanded,
+  showSimilarity,
   onToggle,
+  onCrossReference,
+  crossRefActive,
+  crossRefLoading,
 }: {
   item: SearchResultItem;
   expanded: boolean;
+  showSimilarity?: boolean;
   onToggle: () => void;
+  onCrossReference: () => void;
+  crossRefActive: boolean;
+  crossRefLoading: boolean;
 }) {
   const rawData = item.raw_data as Record<string, unknown> | undefined;
 
@@ -621,6 +828,10 @@ function ResultCard({
 
           <div className="flex-1 min-w-0">
             <p className="text-xs text-slate-400 mb-1 truncate">
+              {item.company_name && (
+                <span className="font-medium text-slate-500">{item.company_name}</span>
+              )}
+              {item.company_name && item.catalog_name && " · "}
               {item.catalog_name ?? item.catalog_id}
             </p>
 
@@ -657,6 +868,13 @@ function ResultCard({
           </div>
 
           <div className="flex items-center gap-3 shrink-0">
+            {showSimilarity && item.relevance != null && (
+              <div className="text-right">
+                <p className="text-xs text-violet-600 font-semibold">
+                  {item.relevance}% match
+                </p>
+              </div>
+            )}
             {item.price != null && (
               <div className="text-right">
                 <p className="text-lg font-bold text-slate-900">
@@ -672,6 +890,29 @@ function ResultCard({
           </div>
         </div>
       </button>
+
+      {/* Cross-reference button — always visible */}
+      <div className="px-5 pb-3 -mt-1">
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onCrossReference();
+          }}
+          disabled={crossRefLoading}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+            crossRefActive
+              ? "bg-violet-100 text-violet-700 ring-1 ring-violet-200"
+              : "bg-slate-50 text-slate-500 hover:bg-violet-50 hover:text-violet-600 ring-1 ring-slate-200 hover:ring-violet-200"
+          }`}
+        >
+          <Icon name="crossReference" className="w-3.5 h-3.5" />
+          {crossRefLoading
+            ? "Finding similar..."
+            : crossRefActive
+            ? "Hide alternatives"
+            : "Similar in other brands"}
+        </button>
+      </div>
 
       {expanded && rawData && (
         <div className="border-t border-slate-100 px-5 pb-5 pt-4">
@@ -709,21 +950,170 @@ function ResultCard({
                     </div>
                   ))}
               </div>
-              {item.catalog_id && (
-                <div className="mt-4">
+
+              {/* Action buttons */}
+              <div className="mt-4 flex items-center gap-3">
+                {item.catalog_id && (
                   <Link
                     href={`/catalog/${item.catalog_id}`}
                     className="text-xs text-indigo-500 hover:text-indigo-700 font-medium"
                   >
                     View full catalog &rarr;
                   </Link>
-                </div>
-              )}
+                )}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onCrossReference();
+                  }}
+                  disabled={crossRefLoading}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                    crossRefActive
+                      ? "bg-violet-100 text-violet-700 ring-1 ring-violet-200"
+                      : "bg-slate-50 text-slate-600 hover:bg-violet-50 hover:text-violet-600 ring-1 ring-slate-200 hover:ring-violet-200"
+                  }`}
+                >
+                  <Icon name="crossReference" className="w-3.5 h-3.5" />
+                  {crossRefLoading
+                    ? "Finding..."
+                    : crossRefActive
+                    ? "Hide alternatives"
+                    : "Similar in other brands"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
       )}
     </Card>
+  );
+}
+
+// ─── Cross-Reference Panel ──────────────────────────────────────────────────
+function CrossReferencePanel({
+  loading,
+  data,
+  sourcePrice,
+  sourceName,
+}: {
+  loading: boolean;
+  data: CrossRefResponse | null;
+  sourcePrice: number | null;
+  sourceName: string | null;
+}) {
+  if (loading) {
+    return (
+      <div className="ml-4 mt-2 border-l-2 border-violet-200 pl-4 pb-2">
+        <div className="flex items-center gap-2 mb-3">
+          <div className="w-3 h-3 rounded-full bg-violet-400 animate-pulse" />
+          <span className="text-xs text-violet-600 font-medium">
+            AI is finding similar products across other brands...
+          </span>
+        </div>
+        <div className="space-y-2">
+          {[...Array(2)].map((_, i) => (
+            <Card key={i} className="p-3">
+              <Skeleton className="h-4 w-3/4 mb-2" />
+              <Skeleton className="h-3 w-1/2" />
+            </Card>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (!data || data.total === 0) {
+    return (
+      <div className="ml-4 mt-2 border-l-2 border-violet-200 pl-4 pb-2">
+        <div className="flex items-center gap-2 p-3 bg-slate-50 rounded-lg">
+          <Icon name="noResults" className="w-4 h-4 text-slate-400" />
+          <span className="text-xs text-slate-500">
+            No similar products found in other catalogs.
+            {sourceName && <> Upload more catalogs to find alternatives for &ldquo;{sourceName}&rdquo;.</>}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="ml-4 mt-2 border-l-2 border-violet-200 pl-4 pb-2">
+      <div className="flex items-center gap-2 mb-3">
+        <Icon name="crossReference" className="w-4 h-4 text-violet-500" />
+        <span className="text-xs text-violet-700 font-semibold">
+          {data.total} similar product{data.total !== 1 ? "s" : ""} in other brands
+        </span>
+        {data.product_type && (
+          <span className="text-xs text-violet-400">
+            &middot; {data.product_type}
+          </span>
+        )}
+      </div>
+
+      <div className="space-y-2">
+        {data.cross_references.map((ref) => (
+          <Card key={ref.id} className="p-3 hover:bg-slate-50 transition-colors">
+            <div className="flex items-start gap-3">
+              {ref.image_url && (
+                <div className="relative w-10 h-10 rounded-lg overflow-hidden bg-slate-100 shrink-0">
+                  <Image
+                    src={ref.image_url}
+                    alt={ref.product_name ?? ""}
+                    fill
+                    className="object-cover"
+                  />
+                </div>
+              )}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-semibold text-violet-600">
+                    {ref.company_name}
+                  </span>
+                  <span className="text-xs text-slate-300">&middot;</span>
+                  <span className="text-xs text-slate-400 truncate">
+                    {ref.catalog_name}
+                  </span>
+                </div>
+                <p className="text-sm font-medium text-slate-800 mt-0.5 leading-tight">
+                  {ref.product_name ?? "Unknown product"}
+                </p>
+                {(ref.category || ref.sub_category) && (
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    {[ref.category, ref.sub_category].filter(Boolean).join(" > ")}
+                  </p>
+                )}
+              </div>
+              <div className="text-right shrink-0">
+                {ref.price != null && (
+                  <>
+                    <p className="text-sm font-bold text-slate-900">
+                      &#x20B9;{Number(ref.price).toLocaleString("en-IN")}
+                    </p>
+                    {ref.price_diff_pct != null && sourcePrice && (
+                      <p
+                        className={`text-xs font-medium ${
+                          ref.price_diff_pct < 0
+                            ? "text-emerald-600"
+                            : ref.price_diff_pct > 0
+                            ? "text-red-500"
+                            : "text-slate-400"
+                        }`}
+                      >
+                        {ref.price_diff_pct < 0
+                          ? `${Math.abs(ref.price_diff_pct)}% cheaper`
+                          : ref.price_diff_pct > 0
+                          ? `${ref.price_diff_pct}% costlier`
+                          : "Same price"}
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          </Card>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -738,8 +1128,19 @@ function EmptyState() {
         AI-powered search across all your product catalogs
       </p>
       <p className="text-xs text-slate-400 mt-1">
-        Select a catalog for precise results, or search across everything
+        Search in English, Hindi, or Hinglish. Try voice search with the mic button!
       </p>
+      <div className="flex items-center gap-4 mt-4 text-xs text-slate-300">
+        <span className="flex items-center gap-1">
+          <Icon name="microphone" className="w-3.5 h-3.5" /> Voice
+        </span>
+        <span className="flex items-center gap-1">
+          <Icon name="crossReference" className="w-3.5 h-3.5" /> Cross-brand
+        </span>
+        <span className="flex items-center gap-1">
+          <Icon name="camera" className="w-3.5 h-3.5" /> Image
+        </span>
+      </div>
     </div>
   );
 }
@@ -754,7 +1155,7 @@ function NoResults({ query }: { query: string }) {
         No products found for &ldquo;{query}&rdquo;
       </p>
       <p className="text-xs text-slate-400 mt-1">
-        Try different keywords or select a specific catalog
+        Try different keywords, voice search, or select a specific catalog
       </p>
     </Card>
   );

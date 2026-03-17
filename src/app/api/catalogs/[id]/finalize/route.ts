@@ -123,6 +123,13 @@ export async function POST(
       }
     }
 
+    // Trigger product image embedding job in the background (non-blocking)
+    // This crops individual product images and generates Titan visual embeddings
+    const embedUrl = new URL(`/api/catalogs/${catalogId}/embed-products`, req.url);
+    fetch(embedUrl.toString(), { method: "POST" }).catch((err) => {
+      console.warn("[finalize] Failed to trigger embed-products job:", err);
+    });
+
     // Build extraction report
     const extractionReport = {
       total_products: totalProducts,
