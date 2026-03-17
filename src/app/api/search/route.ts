@@ -25,6 +25,7 @@ interface CatalogSchema {
  * specific catalog is selected).
  */
 export async function POST(req: NextRequest) {
+  try {
   const { query: rawQuery, catalog_id, limit = 30, offset = 0 } = await req.json();
   if (!rawQuery?.trim()) {
     return NextResponse.json({ error: "Query is required" }, { status: 400 });
@@ -84,18 +85,6 @@ export async function POST(req: NextRequest) {
   }
 
   // Ask Claude to parse the natural language query into a structured SQL filter
-  const client = getClaudeClient();
-  const systemPrompt = buildSystemPrompt(catalogSchema);
-
-  const stream = client.messages.stream({
-    model: CLAUDE_MODEL,
-    max_tokens: 1024,
-    messages: [{ role: "user", content: query.trim() }],
-    system: systemPrompt,
-  });
-  const response = await stream.finalMessage();
-  const rawText = (response.content[0] as { type: string; text: string }).text;
-
   let parsed: {
     sql_where: string;
     explanation: string;
@@ -104,8 +93,20 @@ export async function POST(req: NextRequest) {
   };
 
   try {
+    const client = getClaudeClient();
+    const systemPrompt = buildSystemPrompt(catalogSchema);
+
+    const response = await client.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: 1024,
+      messages: [{ role: "user", content: query.trim() }],
+      system: systemPrompt,
+    });
+    const rawText = (response.content[0] as { type: string; text: string }).text;
+
     parsed = JSON.parse(stripMarkdownFences(rawText));
-  } catch {
+  } catch (err) {
+    console.error("[search] Claude parse error:", err);
     // Fallback: use the query as keyword search
     parsed = {
       sql_where: "",
@@ -166,6 +167,13 @@ export async function POST(req: NextRequest) {
     total_results: total,
     results,
   });
+  } catch (err) {
+    console.error("[search] Unhandled error:", err);
+    return NextResponse.json(
+      { error: "Search failed", details: err instanceof Error ? err.message : String(err) },
+      { status: 500 }
+    );
+  }
 }
 
 // ── Non-blocking search logging for Demand Intelligence ───────────────────────

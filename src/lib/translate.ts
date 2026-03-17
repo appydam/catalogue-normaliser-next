@@ -45,7 +45,7 @@ export async function translateToEnglish(
 ): Promise<{ translated: string; original: string; language: string }> {
   const client = getClaudeClient();
 
-  const stream = client.messages.stream({
+  const response = await client.messages.create({
     model: CLAUDE_MODEL,
     max_tokens: 256,
     system: `You are a translator for an Indian product search system (building materials, plumbing, sanitaryware, hardware, electrical, FMCG).
@@ -72,8 +72,6 @@ Return ONLY valid JSON:
 }`,
     messages: [{ role: "user", content: query }],
   });
-
-  const response = await stream.finalMessage();
   const rawText = (response.content[0] as { type: string; text: string }).text;
 
   try {
