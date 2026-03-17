@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Icon } from "@/components/ui/icon";
-import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { toast } from "sonner";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -26,20 +25,8 @@ type Stage =
   | "done_with_warnings"
   | "error";
 
-interface FingerprintMatch {
-  master_catalog_id: string;
-  confidence: number;
-  match_type: "exact" | "content" | "version_update" | "similar";
-  match_details: string;
-  catalog_name: string;
-  company_name: string;
-  total_products: number;
-  version: number;
-  processing_status: string;
-}
-
 import { classifyPage, classifyCatalog, getSkippablePages, getExtractablePages } from "@/lib/catalog-classifier";
-import type { CatalogType, PageClassification, CatalogClassification } from "@/lib/catalog-classifier";
+import type { PageClassification } from "@/lib/catalog-classifier";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const SAMPLE_PAGE_COUNT = 8;
@@ -165,40 +152,92 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// ─── Upload Job Interface ─────────────────────────────────────────────────────
+type ChunkStatus = "pending" | "running" | "done" | "failed" | "truncated";
+
+interface UploadJob {
+  id: string;
+  fileName: string;
+  fileSize: number;
+  stage: Stage;
+  progress: number;
+  progressLabel: string;
+  log: LogEntry[];
+  catalogId: string | null;
+  errorMsg: string;
+  warningMsg: string;
+  chunkStatuses: ChunkStatus[];
+  collapsed: boolean;
+}
+
+function createJobId(): string {
+  return crypto.randomUUID();
+}
+
+function createJob(file: File): UploadJob {
+  return {
+    id: createJobId(),
+    fileName: file.name,
+    fileSize: file.size,
+    stage: "idle",
+    progress: 0,
+    progressLabel: "",
+    log: [],
+    catalogId: null,
+    errorMsg: "",
+    warningMsg: "",
+    chunkStatuses: [],
+    collapsed: false,
+  };
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function UploadPage() {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
   const dropRef = useRef<HTMLDivElement>(null);
-  const abortRef = useRef(false);
 
-  const [file, setFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const [stage, setStage] = useState<Stage>("idle");
-  const [progress, setProgress] = useState(0);
-  const [progressLabel, setProgressLabel] = useState("");
-  const [log, setLog] = useState<LogEntry[]>([]);
-  const [catalogId, setCatalogId] = useState<string | null>(null);
-  const [errorMsg, setErrorMsg] = useState<string>("");
-  const [warningMsg, setWarningMsg] = useState<string>("");
-  const [chunkStatuses, setChunkStatuses] = useState<("pending" | "running" | "done" | "failed" | "truncated")[]>([]);
+  const [jobs, setJobs] = useState<UploadJob[]>([]);
 
-  // Classification state
-  const [catalogClassification, setCatalogClassification] = useState<CatalogClassification | null>(null);
+  // Mutable ref for jobs — async pipeline reads/writes this to avoid stale closures
+  const jobsRef = useRef<Map<string, UploadJob>>(new Map());
+  // Store abort flags per job
+  const abortRefs = useRef<Map<string, boolean>>(new Map());
 
-  // Fingerprint state
-  const [matchDialogOpen, setMatchDialogOpen] = useState(false);
-  const [bestMatch, setBestMatch] = useState<FingerprintMatch | null>(null);
-  const [fingerprintData, setFingerprintData] = useState<{
-    file_hash: string;
-    content_hash: string;
-    text_sample: string;
-    page_count: number;
-    file_size: number;
-  } | null>(null);
+  // Push ref state to React state for rendering
+  function syncJobs() {
+    setJobs(Array.from(jobsRef.current.values()));
+  }
 
-  function addLog(status: string, message: string) {
-    setLog((prev) => [...prev, { timestamp: new Date().toISOString(), status, message }]);
+  // Update a single job in the ref and sync
+  function updateJob(jobId: string, updates: Partial<UploadJob>) {
+    const existing = jobsRef.current.get(jobId);
+    if (!existing) return;
+    const updated = { ...existing, ...updates };
+    jobsRef.current.set(jobId, updated);
+    syncJobs();
+  }
+
+  // Append a log entry to a job
+  function addJobLog(jobId: string, status: string, message: string) {
+    const existing = jobsRef.current.get(jobId);
+    if (!existing) return;
+    const newLog: LogEntry = { timestamp: new Date().toISOString(), status, message };
+    const updated = { ...existing, log: [...existing.log, newLog] };
+    jobsRef.current.set(jobId, updated);
+    syncJobs();
+  }
+
+  // Update chunk statuses for a job
+  function updateJobChunkStatus(jobId: string, chunkIdx: number, status: ChunkStatus) {
+    const existing = jobsRef.current.get(jobId);
+    if (!existing) return;
+    const next = [...existing.chunkStatuses];
+    next[chunkIdx] = status;
+    const updated = { ...existing, chunkStatuses: next };
+    jobsRef.current.set(jobId, updated);
+    syncJobs();
   }
 
   // ── Drag & Drop ─────────────────────────────────────────────────────────────
@@ -213,57 +252,98 @@ export default function UploadPage() {
     e.preventDefault();
     setIsDragging(false);
     const dropped = e.dataTransfer.files[0];
-    if (dropped?.type === "application/pdf") setFile(dropped);
+    if (dropped?.type === "application/pdf") {
+      handleNewFile(dropped);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const picked = e.target.files?.[0];
-    if (picked?.type === "application/pdf") setFile(picked);
+    if (picked?.type === "application/pdf") {
+      handleNewFile(picked);
+    }
+    // Reset so the same file can be picked again
+    if (inputRef.current) inputRef.current.value = "";
   }
 
-  // ── Fingerprint Check ───────────────────────────────────────────────────────
-  async function checkFingerprint(): Promise<boolean> {
-    if (!file) return false;
+  // ── Start a new upload job when a file is added ──────────────────────────────
+  function handleNewFile(file: File) {
+    const job = createJob(file);
+    jobsRef.current.set(job.id, job);
+    abortRefs.current.set(job.id, false);
+    syncJobs();
+    // Start the pipeline for this job
+    runJobPipeline(job.id, file);
+  }
 
-    setStage("fingerprinting");
-    setLog([]);
-    setProgress(0);
-    setErrorMsg("");
-    setWarningMsg("");
-    addLog("fingerprinting", "Computing PDF fingerprint...");
-    setProgressLabel("Checking for duplicates...");
+  // ── Toggle collapse on a job card ────────────────────────────────────────────
+  function toggleJobCollapse(jobId: string) {
+    const existing = jobsRef.current.get(jobId);
+    if (!existing) return;
+    updateJob(jobId, { collapsed: !existing.collapsed });
+  }
+
+  // ── Remove a completed/failed job card ───────────────────────────────────────
+  function removeJob(jobId: string) {
+    jobsRef.current.delete(jobId);
+    abortRefs.current.delete(jobId);
+    syncJobs();
+  }
+
+  // ── Retry a failed job ───────────────────────────────────────────────────────
+  function retryJob(jobId: string, file: File) {
+    // Remove old job and start fresh
+    jobsRef.current.delete(jobId);
+    abortRefs.current.delete(jobId);
+    handleNewFile(file);
+  }
+
+  // ── Main Pipeline (per job) ──────────────────────────────────────────────────
+  async function runJobPipeline(jobId: string, file: File) {
+    // ── Fingerprinting ──────────────────────────────────────────────────────
+    updateJob(jobId, { stage: "fingerprinting", progress: 0, log: [], errorMsg: "", warningMsg: "" });
+    addJobLog(jobId, "fingerprinting", "Computing PDF fingerprint...");
+    updateJob(jobId, { progressLabel: "Checking for duplicates..." });
+
+    let fingerprintData: {
+      file_hash: string;
+      content_hash: string;
+      text_sample: string;
+      page_count: number;
+      file_size: number;
+    } | null = null;
 
     try {
       const fileHash = await computeFileHash(file);
-      setProgress(2);
+      updateJob(jobId, { progress: 2 });
 
       const pdfjs = await loadPdfJs();
       const arrayBuffer = await file.arrayBuffer();
-      const pdfDoc = await pdfjs.getDocument({ data: arrayBuffer }).promise;
-      const pageCount = pdfDoc.numPages;
+      const pdfDocForFp = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+      const pageCount = pdfDocForFp.numPages;
 
       const pagesToSample = Math.min(3, pageCount);
       const texts: string[] = [];
       for (let i = 1; i <= pagesToSample; i++) {
-        texts.push(await extractPageText(pdfDoc, i));
+        texts.push(await extractPageText(pdfDocForFp, i));
       }
 
       const contentHash = await computeContentHash(texts);
       const textSample = texts.join(" ").slice(0, 2000);
 
-      const fp = {
+      fingerprintData = {
         file_hash: fileHash,
         content_hash: contentHash,
         text_sample: textSample,
         page_count: pageCount,
         file_size: file.size,
       };
-      setFingerprintData(fp);
-      setProgress(4);
+      updateJob(jobId, { progress: 4 });
 
-      addLog("fingerprinting", "Checking for existing catalogs...");
+      addJobLog(jobId, "fingerprinting", "Checking for existing catalogs...");
 
-      const res = await fetch("/api/fingerprint/check", {
+      const fpRes = await fetch("/api/fingerprint/check", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -276,106 +356,42 @@ export default function UploadPage() {
         }),
       });
 
-      if (!res.ok) {
-        addLog("fingerprinting", "Fingerprint check unavailable, proceeding with processing...");
-        return false;
-      }
-
-      const { best_match } = await res.json();
-
-      if (best_match && best_match.confidence >= MATCH_THRESHOLD && best_match.processing_status === "completed") {
-        setBestMatch(best_match);
-        setMatchDialogOpen(true);
-        setStage("idle");
-        return true;
-      }
-
-      addLog("fingerprinting", "No existing match found — proceeding with new processing.");
-      return false;
-    } catch {
-      addLog("fingerprinting", "Fingerprint check failed, proceeding...");
-      return false;
-    }
-  }
-
-  // ── Handle Match Dialog Actions ─────────────────────────────────────────────
-  async function handleReuse() {
-    if (!bestMatch) return;
-    setMatchDialogOpen(false);
-
-    try {
-      const res = await fetch("/api/catalogs/reuse", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ master_catalog_id: bestMatch.master_catalog_id }),
-      });
-
-      if (res.ok) {
-        toast.success("Catalog already processed! Redirecting...");
-        router.push(`/catalog/${bestMatch.master_catalog_id}`);
+      if (fpRes.ok) {
+        const { best_match } = await fpRes.json();
+        if (best_match && best_match.confidence >= MATCH_THRESHOLD && best_match.processing_status === "completed") {
+          // Auto-proceed: log the match but continue processing
+          addJobLog(jobId, "fingerprinting", `Match found: "${best_match.catalog_name}" (${best_match.confidence}% confidence) — processing anyway.`);
+        } else {
+          addJobLog(jobId, "fingerprinting", "No existing match found — proceeding with new processing.");
+        }
       } else {
-        toast.error("Failed to reuse catalog. Processing from scratch...");
-        startProcessing(false);
+        addJobLog(jobId, "fingerprinting", "Fingerprint check unavailable, proceeding with processing...");
       }
     } catch {
-      toast.error("Error. Processing from scratch...");
-      startProcessing(false);
+      addJobLog(jobId, "fingerprinting", "Fingerprint check failed, proceeding...");
     }
-  }
 
-  function handleProcessAsNewVersion() {
-    setMatchDialogOpen(false);
-    startProcessing(false, {
-      parent_catalog_id: bestMatch?.master_catalog_id,
-      version: (bestMatch?.version ?? 0) + 1,
-    });
-  }
+    // ── Main extraction pipeline ────────────────────────────────────────────
+    if (abortRefs.current.get(jobId)) return;
 
-  function handleProcessFromScratch() {
-    setMatchDialogOpen(false);
-    startProcessing(false);
-  }
-
-  // ── CTA Click Handler ─────────────────────────────────────────────────────
-  async function handleStartClick() {
-    const matchFound = await checkFingerprint();
-    if (!matchFound) {
-      startProcessing(false);
-    }
-  }
-
-  // ── Main Pipeline ────────────────────────────────────────────────────────────
-  async function startProcessing(
-    _skipFingerprint = false,
-    versionInfo?: { parent_catalog_id?: string; version?: number }
-  ) {
-    if (!file) return;
-    abortRef.current = false;
-    setStage("reading");
-    setLog((prev) => prev.filter((l) => l.status === "fingerprinting"));
-    setProgress(5);
-    setErrorMsg("");
-    setWarningMsg("");
-    setCatalogId(null);
-    setChunkStatuses([]);
+    updateJob(jobId, { stage: "reading", progress: 5 });
 
     try {
       // 1. Load PDF in browser
-      addLog("reading", `Loading ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)...`);
-      setProgressLabel("Loading PDF...");
+      addJobLog(jobId, "reading", `Loading ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)...`);
+      updateJob(jobId, { progressLabel: "Loading PDF..." });
 
       const pdfjs = await loadPdfJs();
       const arrayBuffer = await file.arrayBuffer();
       const pdfDoc = await pdfjs.getDocument({ data: arrayBuffer }).promise;
       const totalPages = pdfDoc.numPages;
 
-      addLog("reading", `PDF loaded: ${totalPages} pages`);
-      setProgress(5);
+      addJobLog(jobId, "reading", `PDF loaded: ${totalPages} pages`);
+      updateJob(jobId, { progress: 5 });
 
       // 2. Render sample pages for schema discovery
-      setStage("schema");
-      setProgressLabel("Rendering & uploading sample pages...");
-      addLog("schema", "Rendering sample pages for schema discovery...");
+      updateJob(jobId, { stage: "schema", progressLabel: "Rendering & uploading sample pages..." });
+      addJobLog(jobId, "schema", "Rendering sample pages for schema discovery...");
 
       const sampleIndices = getSamplePageIndices(totalPages, SAMPLE_PAGE_COUNT);
 
@@ -390,18 +406,17 @@ export default function UploadPage() {
 
       // Classify catalog type and determine chunk sizing
       const classification = classifyCatalog(sampleClassifications);
-      setCatalogClassification(classification);
       const pagesPerChunk = classification.pages_per_chunk;
 
-      addLog("schema", `Catalog type: ${classification.catalog_type} (${Math.round(classification.confidence * 100)}% confidence)`);
+      addJobLog(jobId, "schema", `Catalog type: ${classification.catalog_type} (${Math.round(classification.confidence * 100)}% confidence)`);
       if (pagesPerChunk === 1) {
-        addLog("schema", `Dense catalog detected — using 1 page per chunk for accuracy`);
+        addJobLog(jobId, "schema", `Dense catalog detected — using 1 page per chunk for accuracy`);
       } else if (pagesPerChunk === 3) {
-        addLog("schema", `Light image catalog — using 3 pages per chunk for speed`);
+        addJobLog(jobId, "schema", `Light image catalog — using 3 pages per chunk for speed`);
       }
 
-      setProgress(10);
-      addLog("schema", `Sending ${samplePages.length} sample pages to Claude for schema discovery...`);
+      updateJob(jobId, { progress: 10 });
+      addJobLog(jobId, "schema", `Sending ${samplePages.length} sample pages to Claude for schema discovery...`);
 
       const schemaRes = await fetch("/api/catalogs/schema", {
         method: "POST",
@@ -416,7 +431,7 @@ export default function UploadPage() {
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { classification: _serverClassification, ...schema } = schemaResponse;
 
-      addLog("schema", `Schema discovered: ${schema.columns.length} columns for "${schema.company_name}"`);
+      addJobLog(jobId, "schema", `Schema discovered: ${schema.columns.length} columns for "${schema.company_name}"`);
 
       // Create catalog record
       const catalogPayload: Record<string, unknown> = {
@@ -432,10 +447,6 @@ export default function UploadPage() {
           text_sample: fingerprintData.text_sample,
         };
       }
-      if (versionInfo?.parent_catalog_id) {
-        catalogPayload.parent_catalog_id = versionInfo.parent_catalog_id;
-        catalogPayload.version = versionInfo.version;
-      }
 
       const catalogRes = await fetch("/api/catalogs", {
         method: "POST",
@@ -444,11 +455,10 @@ export default function UploadPage() {
       });
       if (!catalogRes.ok) throw new Error(`Failed to create catalog: ${await catalogRes.text()}`);
       const { catalog_id } = await catalogRes.json();
-      setCatalogId(catalog_id);
-      setProgress(15);
+      updateJob(jobId, { catalogId: catalog_id, progress: 15 });
 
       // 3. Build page list with intelligent page classification
-      setStage("extracting");
+      updateJob(jobId, { stage: "extracting" });
 
       // Classify ALL pages — for pages we have text, use full classification; others default to "product"
       const allPageTexts = new Map<number, string>();
@@ -491,7 +501,7 @@ export default function UploadPage() {
           const pc = allPageClassifications.get(p);
           return `${p}(${pc?.page_type ?? "unknown"})`;
         }).join(", ");
-        addLog("extracting", `Skipping ${skippedPages.length} non-content pages: ${skippedDetail}`);
+        addJobLog(jobId, "extracting", `Skipping ${skippedPages.length} non-content pages: ${skippedDetail}`);
       }
 
       // Build chunks from processable pages
@@ -501,9 +511,9 @@ export default function UploadPage() {
       }
 
       const totalChunks = chunks.length;
-      addLog("extracting", `Extracting ${pagesToProcess.length} pages in ${totalChunks} chunks (${CONCURRENCY} concurrent)...`);
+      addJobLog(jobId, "extracting", `Extracting ${pagesToProcess.length} pages in ${totalChunks} chunks (${CONCURRENCY} concurrent)...`);
 
-      setChunkStatuses(Array(totalChunks).fill("pending"));
+      updateJob(jobId, { chunkStatuses: Array(totalChunks).fill("pending") });
 
       let completedChunks = 0;
       let failedChunkCount = 0;
@@ -513,13 +523,9 @@ export default function UploadPage() {
 
       // P0-2: Process chunk with retry and exponential backoff
       async function processChunkWithRetry(chunkIdx: number, pageNums: number[]) {
-        if (abortRef.current) return;
+        if (abortRefs.current.get(jobId)) return;
 
-        setChunkStatuses((prev) => {
-          const next = [...prev];
-          next[chunkIdx] = "running";
-          return next;
-        });
+        updateJobChunkStatus(jobId, chunkIdx, "running");
 
         for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
           try {
@@ -581,12 +587,12 @@ export default function UploadPage() {
               const qualityLabel = chunkData.quality === "poor" ? " [LOW QUALITY]" : chunkData.quality === "acceptable" ? " [OK]" : "";
               filteredProductCount += chunkData.products_filtered ?? 0;
               const filteredLabel = chunkData.products_filtered > 0 ? `, ${chunkData.products_filtered} filtered` : "";
-              addLog("extracting", `Chunk ${chunkIdx + 1}/${totalChunks}: ${chunkData.products_found} products${filteredLabel}${qualityLabel}`);
+              addJobLog(jobId, "extracting", `Chunk ${chunkIdx + 1}/${totalChunks}: ${chunkData.products_found} products${filteredLabel}${qualityLabel}`);
 
               // Re-extract pages flagged for re-extraction (low product count vs expected)
               if (chunkData.pages_needing_reextraction?.length > 0 && !chunkData.truncated) {
                 reextractedPageCount += chunkData.pages_needing_reextraction.length;
-                addLog("extracting", `Re-extracting ${chunkData.pages_needing_reextraction.length} pages with low product coverage...`);
+                addJobLog(jobId, "extracting", `Re-extracting ${chunkData.pages_needing_reextraction.length} pages with low product coverage...`);
                 for (const reextractPage of chunkData.pages_needing_reextraction) {
                   const singlePages = pages.filter((p) => p.page_number === reextractPage);
                   if (singlePages.length === 0) continue;
@@ -605,7 +611,7 @@ export default function UploadPage() {
                   });
                   if (reextractRes.ok) {
                     const reData = await reextractRes.json();
-                    addLog("extracting", `  Page ${reextractPage} re-extracted: ${reData.products_found} products`);
+                    addJobLog(jobId, "extracting", `  Page ${reextractPage} re-extracted: ${reData.products_found} products`);
                   }
                 }
               }
@@ -613,7 +619,7 @@ export default function UploadPage() {
               // P0-1: Handle truncation — split and retry with 1 page each
               if (chunkData.truncated && pageNums.length > 1) {
                 truncatedChunkCount++;
-                addLog("extracting", `Chunk ${chunkIdx + 1} was truncated — re-extracting pages individually...`);
+                addJobLog(jobId, "extracting", `Chunk ${chunkIdx + 1} was truncated — re-extracting pages individually...`);
                 for (const singlePage of pageNums) {
                   const singlePages = pages.filter((p) => p.page_number === singlePage);
                   const singleRes = await fetch(`/api/catalogs/${catalog_id}/extract-chunk`, {
@@ -629,21 +635,13 @@ export default function UploadPage() {
                   });
                   if (singleRes.ok) {
                     const singleData = await singleRes.json();
-                    addLog("extracting", `  Page ${singlePage}: ${singleData.products_found} products (re-extracted)`);
+                    addJobLog(jobId, "extracting", `  Page ${singlePage}: ${singleData.products_found} products (re-extracted)`);
                   }
                 }
-                setChunkStatuses((prev) => {
-                  const next = [...prev];
-                  next[chunkIdx] = "done";
-                  return next;
-                });
+                updateJobChunkStatus(jobId, chunkIdx, "done");
               } else {
                 if (chunkData.truncated) truncatedChunkCount++;
-                setChunkStatuses((prev) => {
-                  const next = [...prev];
-                  next[chunkIdx] = chunkData.truncated ? "truncated" : "done";
-                  return next;
-                });
+                updateJobChunkStatus(jobId, chunkIdx, chunkData.truncated ? "truncated" : "done");
               }
 
               // Cache extracted text for context
@@ -657,37 +655,31 @@ export default function UploadPage() {
               break; // Success — exit retry loop
             } else {
               if (attempt < MAX_RETRIES - 1) {
-                addLog("extracting", `Chunk ${chunkIdx + 1} failed (attempt ${attempt + 1}/${MAX_RETRIES}), retrying...`);
+                addJobLog(jobId, "extracting", `Chunk ${chunkIdx + 1} failed (attempt ${attempt + 1}/${MAX_RETRIES}), retrying...`);
                 await sleep(RETRY_DELAYS[attempt]);
               } else {
-                addLog("extracting", `Chunk ${chunkIdx + 1}/${totalChunks}: failed after ${MAX_RETRIES} attempts`);
+                addJobLog(jobId, "extracting", `Chunk ${chunkIdx + 1}/${totalChunks}: failed after ${MAX_RETRIES} attempts`);
                 failedChunkCount++;
-                setChunkStatuses((prev) => {
-                  const next = [...prev];
-                  next[chunkIdx] = "failed";
-                  return next;
-                });
+                updateJobChunkStatus(jobId, chunkIdx, "failed");
               }
             }
           } catch (err) {
             if (attempt < MAX_RETRIES - 1) {
-              addLog("extracting", `Chunk ${chunkIdx + 1} error (attempt ${attempt + 1}): ${String(err).slice(0, 80)}, retrying...`);
+              addJobLog(jobId, "extracting", `Chunk ${chunkIdx + 1} error (attempt ${attempt + 1}): ${String(err).slice(0, 80)}, retrying...`);
               await sleep(RETRY_DELAYS[attempt]);
             } else {
-              addLog("extracting", `Chunk ${chunkIdx + 1}/${totalChunks}: failed after ${MAX_RETRIES} attempts`);
+              addJobLog(jobId, "extracting", `Chunk ${chunkIdx + 1}/${totalChunks}: failed after ${MAX_RETRIES} attempts`);
               failedChunkCount++;
-              setChunkStatuses((prev) => {
-                const next = [...prev];
-                next[chunkIdx] = "failed";
-                return next;
-              });
+              updateJobChunkStatus(jobId, chunkIdx, "failed");
             }
           }
         }
 
         completedChunks++;
-        setProgress(15 + Math.round((completedChunks / totalChunks) * 70));
-        setProgressLabel(`Extracted ${completedChunks} / ${totalChunks} chunks...`);
+        updateJob(jobId, {
+          progress: 15 + Math.round((completedChunks / totalChunks) * 70),
+          progressLabel: `Extracted ${completedChunks} / ${totalChunks} chunks...`,
+        });
       }
 
       // Run chunks with concurrency pool
@@ -701,10 +693,8 @@ export default function UploadPage() {
       await Promise.all(workers);
 
       // 4. Finalize — send chunk failure/truncation data
-      setStage("finalizing");
-      setProgressLabel("Finalizing — building search index...");
-      addLog("indexing", "Building full-text search index...");
-      setProgress(88);
+      updateJob(jobId, { stage: "finalizing", progressLabel: "Finalizing — building search index...", progress: 88 });
+      addJobLog(jobId, "indexing", "Building full-text search index...");
 
       const finalRes = await fetch(`/api/catalogs/${catalog_id}/finalize`, {
         method: "POST",
@@ -725,7 +715,7 @@ export default function UploadPage() {
       if (!finalRes.ok) throw new Error(`Finalize failed: ${await finalRes.text()}`);
       const finalData = await finalRes.json();
 
-      setProgress(100);
+      updateJob(jobId, { progress: 100 });
 
       // P0-6: Show appropriate completion status
       if (finalData.warnings || failedChunkCount > 0 || truncatedChunkCount > 0) {
@@ -733,104 +723,82 @@ export default function UploadPage() {
         if (failedChunkCount > 0) warnings.push(`${failedChunkCount} chunks failed`);
         if (truncatedChunkCount > 0) warnings.push(`${truncatedChunkCount} chunks had truncated responses`);
         const warnText = `${finalData.inserted} products extracted. Warnings: ${warnings.join(", ")}`;
-        setWarningMsg(warnText);
-        addLog("completed", warnText);
-        setStage("done_with_warnings");
-        setProgressLabel("Processing complete with warnings");
-        toast.warning("Catalog processed with some warnings");
+        addJobLog(jobId, "completed", warnText);
+        updateJob(jobId, {
+          warningMsg: warnText,
+          stage: "done_with_warnings",
+          progressLabel: "Processing complete with warnings",
+        });
+        toast.warning(`${file.name}: Catalog processed with some warnings`);
       } else {
         const report = finalData.extraction_report;
         const details: string[] = [`${finalData.inserted} products extracted`];
         if (report?.pages_skipped > 0) details.push(`${report.pages_skipped} pages skipped`);
         if (report?.reextracted_pages > 0) details.push(`${report.reextracted_pages} pages re-extracted`);
         if (report?.filtered_products > 0) details.push(`${report.filtered_products} low-quality removed`);
-        addLog("completed", `Done! ${details.join(", ")}. ${finalData.indexed} indexed for search.`);
-        setStage("done");
-        setProgressLabel("Processing complete!");
-        toast.success("Catalog processed successfully!");
+        addJobLog(jobId, "completed", `Done! ${details.join(", ")}. ${finalData.indexed} indexed for search.`);
+        updateJob(jobId, {
+          stage: "done",
+          progressLabel: "Processing complete!",
+        });
+        toast.success(`${file.name}: Catalog processed successfully!`);
       }
-
-      setTimeout(() => router.push(`/catalog/${catalog_id}`), 2000);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      setErrorMsg(msg);
-      setStage("error");
-      addLog("failed", `Error: ${msg}`);
-      toast.error("Processing failed");
+      addJobLog(jobId, "failed", `Error: ${msg}`);
+      updateJob(jobId, {
+        errorMsg: msg,
+        stage: "error",
+      });
+      toast.error(`${file.name}: Processing failed`);
     }
   }
-
-  const isProcessing = ["reading", "schema", "extracting", "finalizing", "fingerprinting"].includes(stage);
 
   return (
     <div className="p-6 md:p-8 max-w-3xl mx-auto">
       {/* Header */}
       <div className="mb-8">
-        <h2 className="text-2xl font-bold text-slate-900">Upload Catalog</h2>
+        <h2 className="text-2xl font-bold text-slate-900">Upload Catalogs</h2>
         <p className="text-sm text-slate-500 mt-0.5">
-          Upload a product catalog PDF — AI will extract all products automatically.
+          Upload product catalog PDFs — AI will extract all products automatically. You can upload multiple files at once.
         </p>
       </div>
 
-      {/* Drop Zone */}
-      {stage === "idle" && (
-        <div
-          ref={dropRef}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          onClick={() => !file && inputRef.current?.click()}
-          className={`relative border-2 border-dashed rounded-2xl p-12 text-center transition-all cursor-pointer ${
-            isDragging
-              ? "border-indigo-400 bg-indigo-50 scale-[1.01]"
-              : file
-              ? "border-emerald-300 bg-emerald-50"
-              : "border-slate-200 bg-white hover:border-indigo-300 hover:bg-slate-50"
-          }`}
-        >
-          <input
-            ref={inputRef}
-            type="file"
-            accept=".pdf,application/pdf"
-            className="sr-only"
-            onChange={handleFileChange}
-          />
+      {/* Drop Zone — always visible */}
+      <div
+        ref={dropRef}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        onClick={() => inputRef.current?.click()}
+        className={`relative border-2 border-dashed rounded-2xl p-10 text-center transition-all cursor-pointer ${
+          isDragging
+            ? "border-indigo-400 bg-indigo-50 scale-[1.01]"
+            : "border-slate-200 bg-white hover:border-indigo-300 hover:bg-slate-50"
+        }`}
+      >
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".pdf,application/pdf"
+          className="sr-only"
+          onChange={handleFileChange}
+        />
 
-          {file ? (
-            <div className="flex flex-col items-center gap-3">
-              <div className="w-12 h-12 rounded-xl bg-emerald-100 flex items-center justify-center">
-                <Icon name="checkCircle" className="w-6 h-6 text-emerald-500" />
-              </div>
-              <div>
-                <p className="font-semibold text-slate-800">{file.name}</p>
-                <p className="text-sm text-slate-400 mt-0.5">
-                  {(file.size / 1024 / 1024).toFixed(2)} MB
-                </p>
-              </div>
-              <button
-                onClick={(e) => { e.stopPropagation(); setFile(null); }}
-                className="text-xs text-slate-400 hover:text-slate-600 underline"
-              >
-                Choose a different file
-              </button>
-            </div>
-          ) : (
-            <div className="flex flex-col items-center gap-3">
-              <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center">
-                <Icon name="upload" className="w-6 h-6 text-slate-400" />
-              </div>
-              <div>
-                <p className="font-semibold text-slate-700">Drop your PDF here</p>
-                <p className="text-sm text-slate-400 mt-0.5">or click to browse files</p>
-              </div>
-              <p className="text-xs text-slate-300">PDF files only</p>
-            </div>
-          )}
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center">
+            <Icon name="upload" className="w-6 h-6 text-slate-400" />
+          </div>
+          <div>
+            <p className="font-semibold text-slate-700">Drop your PDF here</p>
+            <p className="text-sm text-slate-400 mt-0.5">or click to browse files</p>
+          </div>
+          <p className="text-xs text-slate-300">PDF files only — each file processes independently</p>
         </div>
-      )}
+      </div>
 
-      {/* Feature cards */}
-      {stage === "idle" && file && (
+      {/* Feature cards — show when no jobs yet */}
+      {jobs.length === 0 && (
         <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
           {[
             { icon: "search" as const, title: "Smart Deduplication", desc: "Detects if this catalog was already processed" },
@@ -848,142 +816,207 @@ export default function UploadPage() {
         </div>
       )}
 
-      {/* CTA */}
-      {stage === "idle" && (
-        <div className="mt-6">
-          <Button onClick={handleStartClick} disabled={!file} className="w-full py-3" size="lg">
-            {file ? "Start AI Extraction" : "Select a PDF first"}
-          </Button>
+      {/* Job Cards */}
+      {jobs.length > 0 && (
+        <div className="mt-6 space-y-4">
+          {jobs.map((job) => (
+            <JobCard
+              key={job.id}
+              job={job}
+              onToggleCollapse={() => toggleJobCollapse(job.id)}
+              onRemove={() => removeJob(job.id)}
+              onViewCatalog={() => {
+                if (job.catalogId) router.push(`/catalog/${job.catalogId}`);
+              }}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Job Card ─────────────────────────────────────────────────────────────────
+function JobCard({
+  job,
+  onToggleCollapse,
+  onRemove,
+  onViewCatalog,
+}: {
+  job: UploadJob;
+  onToggleCollapse: () => void;
+  onRemove: () => void;
+  onViewCatalog: () => void;
+}) {
+  const isProcessing = ["reading", "schema", "extracting", "finalizing", "fingerprinting"].includes(job.stage);
+  const isDone = job.stage === "done" || job.stage === "done_with_warnings";
+  const isError = job.stage === "error";
+
+  const statusColor = isDone
+    ? "border-emerald-200 bg-emerald-50/50"
+    : isError
+    ? "border-red-200 bg-red-50/50"
+    : job.stage === "done_with_warnings"
+    ? "border-amber-200 bg-amber-50/50"
+    : "border-slate-200 bg-white";
+
+  return (
+    <Card className={`overflow-hidden ${statusColor}`}>
+      {/* Header — always visible */}
+      <div
+        className="flex items-center gap-3 px-5 py-3.5 cursor-pointer select-none"
+        onClick={onToggleCollapse}
+      >
+        {/* Status icon */}
+        <div className="shrink-0">
+          {isProcessing && (
+            <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center">
+              <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+            </div>
+          )}
+          {job.stage === "done" && (
+            <div className="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center">
+              <Icon name="checkCircle" className="w-4 h-4 text-emerald-500" />
+            </div>
+          )}
+          {job.stage === "done_with_warnings" && (
+            <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center">
+              <Icon name="warning" className="w-4 h-4 text-amber-500" />
+            </div>
+          )}
+          {isError && (
+            <div className="w-8 h-8 rounded-full bg-red-100 flex items-center justify-center">
+              <Icon name="warning" className="w-4 h-4 text-red-400" />
+            </div>
+          )}
+          {job.stage === "idle" && (
+            <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center">
+              <Icon name="upload" className="w-4 h-4 text-slate-400" />
+            </div>
+          )}
+        </div>
+
+        {/* File info */}
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold text-slate-800 truncate">{job.fileName}</p>
+          <p className="text-xs text-slate-400">
+            {(job.fileSize / 1024 / 1024).toFixed(2)} MB
+            {isProcessing && ` — ${job.progressLabel}`}
+            {job.stage === "done" && " — Complete"}
+            {job.stage === "done_with_warnings" && " — Complete with warnings"}
+            {isError && " — Failed"}
+          </p>
+        </div>
+
+        {/* Progress percentage when processing */}
+        {isProcessing && (
+          <span className="text-sm font-bold text-indigo-600 shrink-0">{job.progress}%</span>
+        )}
+
+        {/* Action buttons */}
+        <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+          {isDone && job.catalogId && (
+            <Button onClick={onViewCatalog} size="sm" className="text-xs">
+              View Catalog
+            </Button>
+          )}
+          {(isDone || isError) && (
+            <button
+              onClick={onRemove}
+              className="text-xs text-slate-400 hover:text-slate-600 p-1"
+              title="Dismiss"
+            >
+              <Icon name="x" className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+
+        {/* Collapse chevron */}
+        <Icon
+          name="chevronDown"
+          className={`w-4 h-4 text-slate-400 transition-transform shrink-0 ${job.collapsed ? "" : "rotate-180"}`}
+        />
+      </div>
+
+      {/* Mini progress bar in header */}
+      {isProcessing && (
+        <div className="h-1 bg-slate-100">
+          <div
+            className="h-full bg-gradient-to-r from-indigo-500 to-violet-500 transition-all duration-500"
+            style={{ width: `${job.progress}%` }}
+          />
         </div>
       )}
 
-      {/* Processing UI */}
-      {isProcessing && (
-        <ProcessingView
-          stage={stage}
-          progress={progress}
-          progressLabel={progressLabel}
-          log={log}
-          chunkStatuses={chunkStatuses}
-        />
-      )}
+      {/* Collapsible content */}
+      {!job.collapsed && (
+        <div>
+          {/* Processing view */}
+          {isProcessing && (
+            <ProcessingView
+              stage={job.stage}
+              progress={job.progress}
+              progressLabel={job.progressLabel}
+              log={job.log}
+              chunkStatuses={job.chunkStatuses}
+            />
+          )}
 
-      {/* Done */}
-      {stage === "done" && (
-        <Card className="p-6 text-center bg-emerald-50 border-emerald-200">
-          <div className="w-12 h-12 rounded-full bg-emerald-100 flex items-center justify-center mx-auto mb-3">
-            <Icon name="checkCircle" className="w-6 h-6 text-emerald-500" />
-          </div>
-          <p className="font-semibold text-emerald-700">Processing complete!</p>
-          <p className="text-sm text-emerald-600 mt-1">Redirecting to catalog view...</p>
-        </Card>
-      )}
-
-      {/* Done with warnings */}
-      {stage === "done_with_warnings" && (
-        <Card className="p-6 bg-amber-50 border-amber-200">
-          <div className="flex items-start gap-3">
-            <Icon name="warning" className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" strokeWidth={2} />
-            <div className="flex-1">
-              <p className="font-semibold text-amber-700 text-sm">Processing completed with warnings</p>
-              <p className="text-xs text-amber-600 mt-1">{warningMsg}</p>
-              <p className="text-xs text-amber-500 mt-2">Redirecting to catalog view...</p>
-            </div>
-          </div>
-        </Card>
-      )}
-
-      {/* Error */}
-      {stage === "error" && (
-        <Card className="p-6 bg-red-50 border-red-200">
-          <div className="flex items-start gap-3">
-            <Icon name="warning" className="w-5 h-5 text-red-400 shrink-0 mt-0.5" strokeWidth={2} />
-            <div className="flex-1">
-              <p className="font-semibold text-red-700 text-sm">Processing failed</p>
-              <p className="text-xs text-red-500 mt-1 break-words">{errorMsg}</p>
-            </div>
-          </div>
-          <Button
-            onClick={() => { setStage("idle"); setLog([]); setProgress(0); setChunkStatuses([]); setWarningMsg(""); }}
-            variant="destructive"
-            className="mt-4 w-full"
-          >
-            Try Again
-          </Button>
-        </Card>
-      )}
-
-      {/* ── Match Dialog ─────────────────────────────────────────────────────── */}
-      <Dialog open={matchDialogOpen} onOpenChange={setMatchDialogOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogTitle>Catalog Already Processed</DialogTitle>
-          <DialogDescription>
-            This PDF matches an existing catalog in the system.
-          </DialogDescription>
-
-          {bestMatch && (
-            <div className="mt-4 space-y-4">
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-medium text-slate-500 uppercase tracking-wider">Match</span>
-                  <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
-                    bestMatch.confidence >= 95
-                      ? "bg-emerald-100 text-emerald-700"
-                      : bestMatch.confidence >= 75
-                      ? "bg-amber-100 text-amber-700"
-                      : "bg-blue-100 text-blue-700"
-                  }`}>
-                    {bestMatch.confidence}% match
-                  </span>
-                </div>
-
-                <div>
-                  <p className="font-semibold text-slate-800">{bestMatch.catalog_name}</p>
-                  <p className="text-sm text-slate-500">{bestMatch.company_name}</p>
-                </div>
-
-                <div className="flex items-center gap-4 text-xs text-slate-500">
-                  <span>{bestMatch.total_products} products</span>
-                  <span>Version {bestMatch.version}</span>
-                </div>
-
-                <p className="text-xs text-slate-400 italic">{bestMatch.match_details}</p>
+          {/* Done */}
+          {job.stage === "done" && (
+            <div className="px-5 py-4 border-t border-emerald-100">
+              <div className="flex items-center gap-2 mb-2">
+                <Icon name="checkCircle" className="w-4 h-4 text-emerald-500" />
+                <p className="text-sm font-semibold text-emerald-700">Processing complete!</p>
               </div>
-
-              <div className="space-y-2">
-                {bestMatch.confidence >= 90 && (
-                  <Button onClick={handleReuse} className="w-full" size="lg">
-                    Use Existing Catalog
-                  </Button>
-                )}
-
-                {bestMatch.match_type === "version_update" || bestMatch.match_type === "similar" ? (
-                  <Button
-                    onClick={handleProcessAsNewVersion}
-                    variant={bestMatch.confidence >= 90 ? "secondary" : "primary"}
-                    className="w-full"
-                  >
-                    Process as New Version (v{(bestMatch.version ?? 0) + 1})
-                  </Button>
-                ) : null}
-
-                <Button
-                  onClick={handleProcessFromScratch}
-                  variant="ghost"
-                  className="w-full text-slate-500"
-                >
-                  Process from Scratch
-                </Button>
-              </div>
-
-              <p className="text-xs text-center text-slate-400">
-                Reusing saves processing time and AI tokens.
-              </p>
+              {job.log.length > 0 && (
+                <p className="text-xs text-emerald-600 ml-6">
+                  {job.log[job.log.length - 1]?.message}
+                </p>
+              )}
             </div>
           )}
-        </DialogContent>
-      </Dialog>
-    </div>
+
+          {/* Done with warnings */}
+          {job.stage === "done_with_warnings" && (
+            <div className="px-5 py-4 border-t border-amber-100">
+              <div className="flex items-start gap-2">
+                <Icon name="warning" className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" strokeWidth={2} />
+                <div>
+                  <p className="text-sm font-semibold text-amber-700">Processing completed with warnings</p>
+                  <p className="text-xs text-amber-600 mt-1">{job.warningMsg}</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Error */}
+          {isError && (
+            <div className="px-5 py-4 border-t border-red-100">
+              <div className="flex items-start gap-2">
+                <Icon name="warning" className="w-4 h-4 text-red-400 shrink-0 mt-0.5" strokeWidth={2} />
+                <div className="flex-1">
+                  <p className="text-sm font-semibold text-red-700">Processing failed</p>
+                  <p className="text-xs text-red-500 mt-1 break-words">{job.errorMsg}</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Log for completed/error states */}
+          {(isDone || isError) && job.log.length > 0 && (
+            <div className="px-5 py-3 border-t border-slate-100 max-h-36 overflow-y-auto space-y-1">
+              {[...job.log].reverse().map((entry, i) => (
+                <div key={i} className="flex items-start gap-2">
+                  <LogDot status={entry.status} />
+                  <p className="text-xs text-slate-500 leading-relaxed">{entry.message}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
   );
 }
 
