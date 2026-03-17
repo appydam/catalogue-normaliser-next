@@ -2,12 +2,38 @@ import AnthropicBedrock from "@anthropic-ai/bedrock-sdk";
 
 let _client: AnthropicBedrock | null = null;
 
+/**
+ * Custom fetch wrapper that sanitizes headers containing newlines.
+ * Fixes AWS SigV4 Authorization header issue on Vercel's strict Headers implementation.
+ */
+function sanitizedFetch(url: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  if (init?.headers) {
+    const sanitized: Record<string, string> = {};
+    if (init.headers instanceof Headers) {
+      init.headers.forEach((value, key) => {
+        sanitized[key] = value.replace(/\n/g, "");
+      });
+    } else if (Array.isArray(init.headers)) {
+      for (const [key, value] of init.headers) {
+        sanitized[key] = value.replace(/\n/g, "");
+      }
+    } else {
+      for (const [key, value] of Object.entries(init.headers)) {
+        sanitized[key] = typeof value === "string" ? value.replace(/\n/g, "") : value;
+      }
+    }
+    init = { ...init, headers: sanitized };
+  }
+  return fetch(url, init);
+}
+
 export function getClaudeClient(): AnthropicBedrock {
   if (!_client) {
     _client = new AnthropicBedrock({
       awsAccessKey: process.env.AWS_ACCESS_KEY_ID!,
       awsSecretKey: process.env.AWS_SECRET_ACCESS_KEY!,
       awsRegion: process.env.AWS_REGION ?? "us-east-1",
+      fetch: sanitizedFetch,
     });
   }
   return _client;
