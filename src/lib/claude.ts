@@ -1,41 +1,46 @@
 import AnthropicBedrock from "@anthropic-ai/bedrock-sdk";
 
 let _client: AnthropicBedrock | null = null;
-let _headerPatched = false;
 
 /**
- * Patch the global Headers class to strip newlines from header values.
- * Fixes AWS SigV4 Authorization header containing \n which Vercel's
- * strict undici-based fetch rejects.
+ * The Bedrock SDK's SigV4 signer produces an Authorization header with \n
+ * characters (Smithy's SignatureV4 bug). Vercel's undici-based fetch rejects
+ * these in Headers.append().
+ *
+ * The signed Authorization header looks like:
+ *   AWS4-HMAC-SHA256 Credential=KEY\n/DATE/REGION\n/SERVICE/aws4_request, SignedHeaders=..., Signature=...
+ *
+ * The \n appears within the Credential scope path. The correct single-line form:
+ *   AWS4-HMAC-SHA256 Credential=KEY/DATE/REGION/SERVICE/aws4_request, SignedHeaders=..., Signature=...
+ *
+ * We fix this by intercepting the SDK's internal prepareOptions to sanitize
+ * headers after signing but before they hit fetch.
  */
-function patchHeaders() {
-  if (_headerPatched) return;
-  _headerPatched = true;
 
-  const OriginalHeaders = globalThis.Headers;
-  const origAppend = OriginalHeaders.prototype.append;
-  const origSet = OriginalHeaders.prototype.set;
+// Monkey-patch: override the global fetch used by the SDK at the lowest level
+const _origFetch = globalThis.fetch;
+let _patchActive = false;
 
-  OriginalHeaders.prototype.append = function (name: string, value: string) {
-    if (typeof value === "string" && value.includes("\n")) {
-      // SigV4 Authorization uses \n as separator between Credential/SignedHeaders/Signature
-      // Join them into a single line — the parts are already comma-separated within
-      value = value.split("\n").map(s => s.trim()).filter(Boolean).join("");
+function enableFetchPatch() {
+  if (_patchActive) return;
+  _patchActive = true;
+
+  globalThis.fetch = function patchedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    if (init?.headers && typeof init.headers === "object" && !(init.headers instanceof Headers) && !Array.isArray(init.headers)) {
+      // Plain object headers from the SDK — sanitize before they hit new Headers()
+      const sanitized: Record<string, string> = {};
+      for (const [key, value] of Object.entries(init.headers as Record<string, string>)) {
+        sanitized[key] = typeof value === "string" ? value.replace(/\r?\n/g, "") : value;
+      }
+      return _origFetch(input, { ...init, headers: sanitized });
     }
-    return origAppend.call(this, name, value);
-  };
-
-  OriginalHeaders.prototype.set = function (name: string, value: string) {
-    if (typeof value === "string" && value.includes("\n")) {
-      value = value.split("\n").map(s => s.trim()).filter(Boolean).join("");
-    }
-    return origSet.call(this, name, value);
-  };
+    return _origFetch(input, init);
+  } as typeof fetch;
 }
 
 export function getClaudeClient(): AnthropicBedrock {
   if (!_client) {
-    patchHeaders();
+    enableFetchPatch();
     _client = new AnthropicBedrock({
       awsAccessKey: process.env.AWS_ACCESS_KEY_ID!,
       awsSecretKey: process.env.AWS_SECRET_ACCESS_KEY!,
