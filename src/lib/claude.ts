@@ -17,11 +17,19 @@ function patchHeaders() {
   const origSet = OriginalHeaders.prototype.set;
 
   OriginalHeaders.prototype.append = function (name: string, value: string) {
-    return origAppend.call(this, name, typeof value === "string" ? value.replace(/[\r\n]+/g, " ") : value);
+    if (typeof value === "string" && value.includes("\n")) {
+      // SigV4 Authorization uses \n as separator between Credential/SignedHeaders/Signature
+      // Join them into a single line — the parts are already comma-separated within
+      value = value.split("\n").map(s => s.trim()).filter(Boolean).join("");
+    }
+    return origAppend.call(this, name, value);
   };
 
   OriginalHeaders.prototype.set = function (name: string, value: string) {
-    return origSet.call(this, name, typeof value === "string" ? value.replace(/[\r\n]+/g, " ") : value);
+    if (typeof value === "string" && value.includes("\n")) {
+      value = value.split("\n").map(s => s.trim()).filter(Boolean).join("");
+    }
+    return origSet.call(this, name, value);
   };
 }
 
