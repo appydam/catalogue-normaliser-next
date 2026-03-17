@@ -21,6 +21,7 @@ export const maxDuration = 60;
  * 4. Return ranked results with price comparison
  */
 export async function POST(req: NextRequest) {
+  try {
   const { product_id, product_data, source_catalog_id } = await req.json();
 
   if (!product_id && !product_data) {
@@ -203,6 +204,13 @@ Return ONLY valid JSON:
     cross_references: enrichedResults,
     total: enrichedResults.length,
   });
+  } catch (err) {
+    console.error("[cross-reference] Error:", err);
+    return NextResponse.json(
+      { error: "Cross-reference failed", details: err instanceof Error ? err.message : String(err) },
+      { status: 500 }
+    );
+  }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
