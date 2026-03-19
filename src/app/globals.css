@@ -23,6 +23,20 @@
 
   /* Sidebar */
   --sidebar-width: 16rem;
+  --sidebar-bg: #0f172a;
+  --sidebar-border: #1e293b;
+  --sidebar-text: #94a3b8;
+  --sidebar-text-active: #ffffff;
+  --sidebar-accent: #818cf8;
+
+  /* Gradients */
+  --gradient-primary: linear-gradient(135deg, #6366f1, #8b5cf6);
+  --gradient-primary-text: linear-gradient(135deg, #6366f1, #a78bfa);
+
+  /* Premium Shadows */
+  --shadow-card: 0 1px 3px 0 rgb(0 0 0 / 0.04), 0 1px 2px -1px rgb(0 0 0 / 0.04);
+  --shadow-card-hover: 0 10px 25px -5px rgb(0 0 0 / 0.08), 0 8px 10px -6px rgb(0 0 0 / 0.04);
+  --shadow-glow-indigo: 0 0 20px rgb(99 102 241 / 0.15);
 }
 
 @theme inline {
@@ -31,7 +45,7 @@
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 
-  /* Animations for Radix */
+  /* Radix animations */
   --animate-in: enter 200ms ease-out;
   --animate-out: exit 150ms ease-in;
 
@@ -43,6 +57,24 @@
     from { opacity: 1; transform: scale(1) translateY(0); }
     to { opacity: 0; transform: scale(0.95) translateY(4px); }
   }
+
+  /* Premium animations */
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+  @keyframes pulseGlow {
+    0%, 100% { box-shadow: 0 0 4px currentColor; }
+    50% { box-shadow: 0 0 12px currentColor; }
+  }
 }
 
 body {
@@ -52,12 +84,40 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Scrollbar styling */
-::-webkit-scrollbar { width: 6px; height: 6px; }
+/* Premium scrollbar */
+::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+::-webkit-scrollbar-thumb { background: rgb(0 0 0 / 0.1); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgb(0 0 0 / 0.2); }
 
 /* Radix animation utilities */
 [data-state="open"] { animation: enter 200ms ease-out; }
 [data-state="closed"] { animation: exit 150ms ease-in; }
+
+/* Premium utility classes */
+.gradient-text {
+  background: var(--gradient-primary-text);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.glass {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.4s ease-out both;
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-out both;
+}
+
+.stagger-1 { animation-delay: 50ms; }
+.stagger-2 { animation-delay: 100ms; }
+.stagger-3 { animation-delay: 150ms; }
+.stagger-4 { animation-delay: 200ms; }
+.stagger-5 { animation-delay: 250ms; }

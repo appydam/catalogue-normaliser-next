@@ -48,7 +48,7 @@ export default function CatalogsPage() {
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h2 className="text-2xl font-bold text-slate-900">Catalogs</h2>
+          <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Catalogs</h2>
           <p className="text-sm text-slate-500 mt-0.5">
             {loading ? "Loading…" : `${catalogs.length} catalog${catalogs.length !== 1 ? "s" : ""} total`}
           </p>
@@ -69,6 +69,22 @@ export default function CatalogsPage() {
         </div>
       </div>
 
+      {/* Hero Stats */}
+      {!loading && catalogs.length > 0 && (
+        <div className="mb-6 rounded-2xl bg-gradient-to-r from-indigo-500 to-violet-500 p-6 text-white">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-indigo-100">Your Catalog Intelligence</p>
+              <p className="text-3xl font-bold mt-1 tabular-nums">{catalogs.length} Catalogs</p>
+            </div>
+            <div className="text-right">
+              <p className="text-sm text-indigo-100">Total Products</p>
+              <p className="text-3xl font-bold mt-1 tabular-nums">{catalogs.reduce((sum, c) => sum + (c.total_products ?? 0), 0).toLocaleString("en-IN")}</p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Content */}
       {loading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -80,8 +96,10 @@ export default function CatalogsPage() {
         <EmptyState />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {catalogs.map((catalog) => (
-            <CatalogCard key={catalog.id} catalog={catalog} />
+          {catalogs.map((catalog, index) => (
+            <div key={catalog.id} className="animate-fade-in-up" style={{ animationDelay: `${index * 50}ms` }}>
+              <CatalogCard catalog={catalog} />
+            </div>
           ))}
         </div>
       )}
@@ -92,7 +110,7 @@ export default function CatalogsPage() {
 function EmptyState() {
   return (
     <div className="flex flex-col items-center justify-center py-24 px-8 text-center">
-      <div className="w-16 h-16 rounded-2xl bg-indigo-50 flex items-center justify-center mb-4">
+      <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-100 to-violet-100 flex items-center justify-center mb-4">
         <Icon name="document" className="w-8 h-8 text-indigo-400" />
       </div>
       <h3 className="text-sm font-semibold text-slate-800 mb-1">No catalogs yet</h3>
@@ -121,7 +139,7 @@ function CatalogCard({ catalog }: { catalog: Catalog }) {
     <Card hover={isClickable} className="p-5">
       {/* Top row */}
       <div className="flex items-start justify-between gap-3 mb-3">
-        <div className="w-10 h-10 rounded-lg bg-indigo-50 flex items-center justify-center shrink-0">
+        <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-indigo-50 to-violet-50 flex items-center justify-center shrink-0">
           <Icon name="document" className="w-5 h-5 text-indigo-400" />
         </div>
         <StatusBadge status={catalog.processing_status} />

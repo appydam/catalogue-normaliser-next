@@ -294,7 +294,7 @@ export default function SearchPage() {
     <div className="p-6 md:p-8 max-w-4xl mx-auto">
       {/* Header */}
       <div className="mb-6">
-        <h2 className="text-2xl font-bold text-slate-900">Search Products</h2>
+        <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Search Products</h2>
         <p className="text-sm text-slate-500 mt-0.5">
           Search in natural language — supports English, Hindi &amp; Hinglish. Try voice search!
         </p>
@@ -438,7 +438,7 @@ export default function SearchPage() {
                   ? "e.g. quickfit pipes 180mm 8 kgf pressure"
                   : 'e.g. "3 inch PVC pipe" or "तीन इंच पाइप" or "teen inch pipe ka rate"'
               }
-              className="w-full pl-12 pr-28 py-4 bg-white border border-slate-200 rounded-2xl text-slate-800 placeholder-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-transparent shadow-sm transition-shadow"
+              className="w-full pl-12 pr-28 py-5 bg-white border border-slate-200 rounded-2xl text-slate-800 placeholder-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-transparent shadow-lg shadow-slate-200/50 focus:shadow-xl focus:shadow-indigo-100/50 transition-shadow"
             />
             <div className="absolute right-3 inset-y-3 flex items-center gap-1.5">
               {/* Voice search button */}
@@ -492,7 +492,7 @@ export default function SearchPage() {
                     setQuery(q);
                     handleTextSearch(q);
                   }}
-                  className="px-3 py-1.5 bg-white border border-slate-200 text-slate-500 text-xs rounded-lg hover:bg-indigo-50 hover:border-indigo-200 hover:text-indigo-600 transition-all"
+                  className="px-3 py-1.5 bg-white border border-slate-200 text-slate-500 text-xs rounded-lg hover:bg-indigo-50 hover:border-indigo-200 hover:text-indigo-600 hover:scale-[1.02] transition-all"
                 >
                   {q}
                 </button>
@@ -725,8 +725,8 @@ export default function SearchPage() {
             <NoResults query={submitted} />
           ) : (
             <div className="space-y-3">
-              {response.results.map((item) => (
-                <div key={item.id}>
+              {response.results.map((item, i) => (
+                <div key={item.id} className="animate-fade-in-up" style={{ animationDelay: `${i * 30}ms` }}>
                   <ResultCard
                     item={item}
                     expanded={expandedId === item.id}

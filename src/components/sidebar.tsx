@@ -30,7 +30,7 @@ export function Sidebar() {
   const nav = (
     <>
       {/* Brand */}
-      <div className="px-5 py-5 border-b border-slate-100">
+      <div className="px-5 py-5 border-b border-slate-800/50">
         <div className="flex items-center gap-2.5">
           <Image
             src="/logo.svg"
@@ -40,8 +40,8 @@ export function Sidebar() {
             className="shrink-0"
           />
           <div>
-            <h1 className="text-sm font-bold text-slate-900 leading-none tracking-tight">CatalogAI</h1>
-            <p className="text-[11px] text-slate-400 mt-0.5">Your Supplier Intelligence Platform</p>
+            <h1 className="text-sm font-bold text-white leading-none tracking-tight">CatalogAI</h1>
+            <p className="text-[11px] text-slate-500 mt-0.5">Supplier Intelligence Platform</p>
           </div>
         </div>
       </div>
@@ -56,17 +56,17 @@ export function Sidebar() {
               href={href}
               onClick={() => setMobileOpen(false)}
               className={cn(
-                "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 group",
+                "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 group",
                 active
-                  ? "bg-indigo-50 text-indigo-700"
-                  : "text-slate-500 hover:text-slate-800 hover:bg-slate-50"
+                  ? "bg-white/10 text-white border-l-2 border-indigo-400 ml-0"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
               )}
             >
               <Icon
                 name={icon}
                 className={cn(
                   "w-[18px] h-[18px] transition-colors",
-                  active ? "text-indigo-500" : "text-slate-400 group-hover:text-slate-500"
+                  active ? "text-indigo-400" : "text-slate-500 group-hover:text-slate-400"
                 )}
               />
               {label}
@@ -76,10 +76,10 @@ export function Sidebar() {
       </nav>
 
       {/* Footer */}
-      <div className="px-5 py-4 border-t border-slate-100">
+      <div className="px-5 py-4 border-t border-slate-800/50">
         <div className="flex items-center gap-2">
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-          <span className="text-[11px] text-slate-400">Powered by Claude AI</span>
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_6px_rgba(52,211,153,0.5)]" />
+          <span className="text-[11px] text-slate-600">Powered by Claude AI</span>
         </div>
       </div>
     </>
@@ -90,7 +90,7 @@ export function Sidebar() {
       {/* Mobile hamburger */}
       <button
         onClick={() => setMobileOpen(true)}
-        className="md:hidden fixed top-3 left-3 z-50 p-2 rounded-lg bg-white border border-slate-200 shadow-sm"
+        className="md:hidden fixed top-3 left-3 z-50 p-2 rounded-lg bg-white border border-slate-200 shadow-md"
         aria-label="Open navigation"
       >
         <Icon name="menu" className="w-5 h-5 text-slate-600" strokeWidth={2} />
@@ -100,13 +100,13 @@ export function Sidebar() {
       {mobileOpen && (
         <div className="md:hidden fixed inset-0 z-40">
           <div
-            className="absolute inset-0 bg-black/30 backdrop-blur-sm"
+            className="absolute inset-0 bg-black/40 backdrop-blur-sm"
             onClick={() => setMobileOpen(false)}
           />
-          <aside className="relative w-64 h-full bg-white flex flex-col shadow-xl">
+          <aside className="relative w-64 h-full bg-gradient-to-b from-slate-900 to-slate-950 flex flex-col shadow-xl">
             <button
               onClick={() => setMobileOpen(false)}
-              className="absolute top-3 right-3 p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+              className="absolute top-3 right-3 p-1 rounded-lg text-slate-500 hover:text-slate-300 hover:bg-white/10"
               aria-label="Close navigation"
             >
               <Icon name="x" className="w-4 h-4" strokeWidth={2} />
@@ -117,7 +117,7 @@ export function Sidebar() {
       )}
 
       {/* Desktop sidebar */}
-      <aside className="hidden md:flex w-64 shrink-0 bg-white border-r border-slate-200 flex-col">
+      <aside className="hidden md:flex w-64 shrink-0 bg-gradient-to-b from-slate-900 to-slate-950 border-r border-slate-800/50 flex-col">
         {nav}
       </aside>
     </>

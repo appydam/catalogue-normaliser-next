@@ -338,7 +338,7 @@ export default function CatalogDetailPage() {
               </div>
             ) : (
               <>
-                <h2 className="text-2xl font-bold text-slate-900">{catalog.catalog_name}</h2>
+                <h2 className="text-2xl font-bold tracking-tight text-slate-900">{catalog.catalog_name}</h2>
                 <button
                   onClick={() => { setNameInput(catalog.catalog_name); setEditingName(true); }}
                   className="p-1 rounded-md hover:bg-slate-100 transition-colors text-slate-400 hover:text-slate-600"
@@ -453,7 +453,7 @@ export default function CatalogDetailPage() {
             <h3 className="text-sm font-semibold text-slate-700 mb-3">Schema</h3>
             <div className="flex flex-wrap gap-2">
               {schema.columns.map((col) => (
-                <span key={col.name} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-50 border border-slate-100 text-xs">
+                <span key={col.name} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-50 border border-slate-100 text-xs hover:bg-slate-100 transition-colors cursor-default">
                   <span className="font-mono font-semibold text-indigo-600">{col.name}</span>
                   <span className="text-slate-300">&middot;</span>
                   <span className="text-slate-400">{col.type}</span>
@@ -530,7 +530,7 @@ export default function CatalogDetailPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
-                <tr className="bg-slate-50 border-b border-slate-100">
+                <tr className="sticky top-0 z-10 bg-slate-50/95 backdrop-blur-sm border-b border-slate-100">
                   {allCols.filter((c) => visibleCols.has(c)).map((col) => (
                     <th
                       key={col}
@@ -556,7 +556,7 @@ export default function CatalogDetailPage() {
               </thead>
               <tbody className={productsLoading ? "opacity-50" : ""}>
                 {products.map((product, i) => (
-                  <tr key={i} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
+                  <tr key={i} className="border-b border-slate-50 hover:bg-indigo-50/30 transition-colors">
                     {allCols.filter((c) => visibleCols.has(c)).map((col) => {
                       const val = product[col];
                       const strVal = val == null ? null : String(val);
@@ -606,7 +606,7 @@ function StatCard({ label, value, highlight }: { label: string; value: string; h
   return (
     <Card className="p-4">
       <p className="text-xs text-slate-400 mb-1">{label}</p>
-      <p className={`text-lg font-bold ${highlight ? "text-emerald-500" : "text-slate-900"}`}>{value}</p>
+      <p className={`text-2xl font-bold tabular-nums ${highlight ? "text-emerald-500" : "text-slate-900"}`}>{value}</p>
     </Card>
   );
 }

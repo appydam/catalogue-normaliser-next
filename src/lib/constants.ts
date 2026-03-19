@@ -7,27 +7,27 @@ export const STATUS_CONFIG = {
   },
   processing: {
     label: "Processing",
-    dotClass: "bg-amber-400 animate-pulse",
+    dotClass: "bg-amber-400 animate-pulse shadow-[0_0_8px_rgba(251,191,36,0.4)]",
     badgeClass: "bg-amber-50 text-amber-700 ring-amber-200",
   },
   extracting: {
     label: "Extracting",
-    dotClass: "bg-blue-400 animate-pulse",
+    dotClass: "bg-blue-400 animate-pulse shadow-[0_0_8px_rgba(96,165,250,0.4)]",
     badgeClass: "bg-blue-50 text-blue-700 ring-blue-200",
   },
   inserting: {
     label: "Inserting",
-    dotClass: "bg-violet-400 animate-pulse",
+    dotClass: "bg-violet-400 animate-pulse shadow-[0_0_8px_rgba(167,139,250,0.4)]",
     badgeClass: "bg-violet-50 text-violet-700 ring-violet-200",
   },
   indexing: {
     label: "Indexing",
-    dotClass: "bg-indigo-400 animate-pulse",
+    dotClass: "bg-indigo-400 animate-pulse shadow-[0_0_8px_rgba(129,140,248,0.4)]",
     badgeClass: "bg-indigo-50 text-indigo-700 ring-indigo-200",
   },
   completed: {
     label: "Completed",
-    dotClass: "bg-emerald-400",
+    dotClass: "bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.3)]",
     badgeClass: "bg-emerald-50 text-emerald-700 ring-emerald-200",
   },
   failed: {

@@ -16,7 +16,7 @@ export function DropdownContent({
       <DropdownPrimitive.Content
         sideOffset={sideOffset}
         className={cn(
-          "z-50 min-w-[12rem] overflow-hidden rounded-xl bg-white border border-slate-200 p-1.5 shadow-lg shadow-slate-200/60",
+          "z-50 min-w-[12rem] overflow-hidden rounded-xl bg-white/95 backdrop-blur-lg border border-slate-200/80 p-1.5 shadow-xl shadow-slate-200/80",
           "data-[state=open]:animate-in data-[state=closed]:animate-out",
           "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
           "data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95",
@@ -38,7 +38,7 @@ export function DropdownItem({
     <DropdownPrimitive.Item
       className={cn(
         "relative flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-slate-600 outline-none select-none",
-        "data-[highlighted]:bg-slate-50 data-[highlighted]:text-slate-900",
+        "data-[highlighted]:bg-indigo-50 data-[highlighted]:text-indigo-900",
         "cursor-pointer transition-colors",
         className
       )}

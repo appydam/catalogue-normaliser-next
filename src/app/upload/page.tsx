@@ -772,7 +772,7 @@ export default function UploadPage() {
     <div className="p-6 md:p-8 max-w-3xl mx-auto">
       {/* Header */}
       <div className="mb-8">
-        <h2 className="text-2xl font-bold text-slate-900">Upload Catalogs</h2>
+        <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Upload Catalogs</h2>
         <p className="text-sm text-slate-500 mt-0.5">
           Upload product catalog PDFs — AI will extract all products automatically. You can upload multiple files at once.
         </p>
@@ -787,8 +787,8 @@ export default function UploadPage() {
         onClick={() => inputRef.current?.click()}
         className={`relative border-2 border-dashed rounded-2xl p-10 text-center transition-all cursor-pointer ${
           isDragging
-            ? "border-indigo-400 bg-indigo-50 scale-[1.01]"
-            : "border-slate-200 bg-white hover:border-indigo-300 hover:bg-slate-50"
+            ? "border-indigo-400 bg-indigo-50 scale-[1.02] shadow-lg shadow-indigo-200/50"
+            : "border-slate-200 bg-white shadow-sm hover:border-indigo-300 hover:bg-slate-50"
         }`}
       >
         <input
@@ -800,7 +800,7 @@ export default function UploadPage() {
         />
 
         <div className="flex flex-col items-center gap-3">
-          <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center">
+          <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-slate-100 to-indigo-50 flex items-center justify-center">
             <Icon name="upload" className="w-6 h-6 text-slate-400" />
           </div>
           <div>
@@ -819,7 +819,7 @@ export default function UploadPage() {
             { icon: "sparkle" as const, title: "Parallel Extraction", desc: "Multiple chunks processed concurrently for speed" },
             { icon: "catalog" as const, title: "Full-Text Index", desc: "PostgreSQL tsvector for instant search" },
           ].map((c) => (
-            <Card key={c.title} className="p-4">
+            <Card key={c.title} className="p-4 hover:shadow-md hover:-translate-y-0.5 transition-all">
               <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center mb-2">
                 <Icon name={c.icon} className="w-4 h-4 text-indigo-500" />
               </div>
@@ -956,7 +956,7 @@ function JobCard({
       {isProcessing && (
         <div className="h-1 bg-slate-100">
           <div
-            className="h-full bg-gradient-to-r from-indigo-500 to-violet-500 transition-all duration-500"
+            className="h-full bg-gradient-to-r from-indigo-500 to-violet-500 shadow-[0_0_8px_rgba(99,102,241,0.3)] transition-all duration-500"
             style={{ width: `${job.progress}%` }}
           />
         </div>
@@ -1073,7 +1073,7 @@ function ProcessingView({
                       done
                         ? "bg-emerald-400 text-white"
                         : active
-                        ? "bg-indigo-500 text-white ring-4 ring-indigo-100"
+                        ? "bg-indigo-500 text-white ring-4 ring-indigo-100 shadow-[0_0_12px_rgba(99,102,241,0.2)]"
                         : "bg-slate-100 text-slate-400"
                     }`}
                   >
@@ -1104,7 +1104,7 @@ function ProcessingView({
         </div>
         <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
           <div
-            className="h-full bg-gradient-to-r from-indigo-500 to-violet-500 rounded-full transition-all duration-500"
+            className="h-full bg-gradient-to-r from-indigo-500 to-violet-500 rounded-full shadow-[0_0_8px_rgba(99,102,241,0.3)] transition-all duration-500"
             style={{ width: `${progress}%` }}
           />
         </div>
