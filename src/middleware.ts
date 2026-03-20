@@ -1,14 +1,8 @@
-import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
+import { clerkMiddleware } from "@clerk/nextjs/server";
 
-const isProtectedRoute = createRouteMatcher([
-  "/upload",
-]);
-
-export default clerkMiddleware(async (auth, req) => {
-  if (isProtectedRoute(req)) {
-    await auth.protect();
-  }
-});
+// All pages are public — auth is enforced at the component level (upload page)
+// and in API route handlers (write endpoints)
+export default clerkMiddleware();
 
 export const config = {
   matcher: [

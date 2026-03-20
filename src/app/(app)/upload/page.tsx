@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useUser, SignInButton, SignUpButton } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Icon } from "@/components/ui/icon";
@@ -194,6 +195,8 @@ function createJob(file: File): UploadJob {
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function UploadPage() {
   const router = useRouter();
+  const { isSignedIn, isLoaded } = useUser();
+  const [showAuthWall, setShowAuthWall] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const dropRef = useRef<HTMLDivElement>(null);
 
@@ -269,6 +272,10 @@ export default function UploadPage() {
 
   // ── Start a new upload job when a file is added ──────────────────────────────
   function handleNewFile(file: File) {
+    if (isLoaded && !isSignedIn) {
+      setShowAuthWall(true);
+      return;
+    }
     const job = createJob(file);
     jobsRef.current.set(job.id, job);
     abortRefs.current.set(job.id, false);
@@ -844,6 +851,51 @@ export default function UploadPage() {
               }}
             />
           ))}
+        </div>
+      )}
+
+      {/* Auth Wall Modal */}
+      {showAuthWall && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/50 backdrop-blur-md"
+            onClick={() => setShowAuthWall(false)}
+          />
+          <div className="relative bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl border border-slate-200/50 p-8 max-w-md w-full mx-4 animate-fade-in-up">
+            <button
+              onClick={() => setShowAuthWall(false)}
+              className="absolute top-4 right-4 p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+              </svg>
+            </button>
+
+            <div className="text-center">
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center mx-auto mb-4 shadow-lg shadow-indigo-200/50">
+                <Icon name="upload" className="w-7 h-7 text-white" />
+              </div>
+              <h3 className="text-lg font-bold text-slate-900 tracking-tight">Sign up to upload catalogs</h3>
+              <p className="text-sm text-slate-500 mt-2 leading-relaxed">
+                Create a free account to start extracting products from your PDF catalogs with AI.
+              </p>
+              <div className="mt-6 space-y-3">
+                <SignUpButton mode="modal">
+                  <button className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-indigo-500 to-indigo-600 text-white font-semibold text-sm shadow-md shadow-indigo-200/50 hover:shadow-lg hover:from-indigo-600 hover:to-indigo-700 active:scale-[0.98] transition-all">
+                    Create Free Account
+                  </button>
+                </SignUpButton>
+                <SignInButton mode="modal">
+                  <button className="w-full py-3 px-4 rounded-xl bg-white text-slate-700 font-semibold text-sm border border-slate-200 hover:bg-slate-50 hover:border-slate-300 transition-all">
+                    Already have an account? Sign In
+                  </button>
+                </SignInButton>
+              </div>
+              <p className="text-xs text-slate-400 mt-4">
+                Browse catalogs, search products, and compare prices — all free without an account.
+              </p>
+            </div>
+          </div>
         </div>
       )}
     </div>
