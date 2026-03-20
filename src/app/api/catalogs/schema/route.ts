@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
 import { getClaudeClient, CLAUDE_MODEL, stripMarkdownFences, buildPageContentBlocks } from "@/lib/claude";
 import { validateSchema } from "@/lib/types";
 import { classifyPage, classifyCatalog } from "@/lib/catalog-classifier";
@@ -7,6 +8,11 @@ import { classifyPage, classifyCatalog } from "@/lib/catalog-classifier";
 export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
+  const { userId } = await auth();
+  if (!userId) {
+    return NextResponse.json({ error: "Authentication required to create catalogs" }, { status: 401 });
+  }
+
   try {
     const body = (await req.json()) as { pages: Array<{ page_number: number; image_url?: string; image_base64?: string; text: string }>; total_pages?: number };
     const client = getClaudeClient();

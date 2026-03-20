@@ -4,12 +4,13 @@ import { useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
+import { UserButton, SignInButton, useUser } from "@clerk/nextjs";
 import { Icon } from "./ui/icon";
 import { cn } from "@/lib/cn";
 import type { IconName } from "@/lib/constants";
 
 const NAV_ITEMS: { href: string; label: string; icon: IconName; matchExact?: boolean }[] = [
-  { href: "/", label: "Catalogs", icon: "catalog", matchExact: true },
+  { href: "/dashboard", label: "Catalogs", icon: "catalog", matchExact: true },
   { href: "/upload", label: "Upload Catalog", icon: "upload" },
   { href: "/search", label: "Search Products", icon: "search" },
   { href: "/quotations", label: "Quick Quotation", icon: "receipt" },
@@ -21,6 +22,7 @@ const NAV_ITEMS: { href: string; label: string; icon: IconName; matchExact?: boo
 export function Sidebar() {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const { isSignedIn, user } = useUser();
 
   function isActive(href: string, exact?: boolean) {
     if (exact) return pathname === href;
@@ -44,6 +46,31 @@ export function Sidebar() {
             <p className="text-[11px] text-slate-500 mt-0.5">Supplier Intelligence Platform</p>
           </div>
         </div>
+      </div>
+
+      {/* User section */}
+      <div className="px-4 py-3 border-b border-slate-800/50">
+        {isSignedIn ? (
+          <div className="flex items-center gap-2.5">
+            <UserButton
+              appearance={{
+                elements: { avatarBox: "w-7 h-7" },
+              }}
+            />
+            <span className="text-xs text-slate-400 truncate">
+              {user?.firstName || user?.emailAddresses[0]?.emailAddress}
+            </span>
+          </div>
+        ) : (
+          <SignInButton mode="modal">
+            <button className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm text-indigo-400 hover:text-indigo-300 hover:bg-white/5 transition-colors font-medium">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z" />
+              </svg>
+              Sign In
+            </button>
+          </SignInButton>
+        )}
       </div>
 
       {/* Nav */}

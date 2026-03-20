@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
+import { ClerkProvider } from "@clerk/nextjs";
 import { Geist, Geist_Mono } from "next/font/google";
-import { Sidebar } from "@/components/sidebar";
 import { ToastProvider } from "@/components/ui/toast-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import "./globals.css";
@@ -30,20 +30,15 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="h-full">
-      <body suppressHydrationWarning className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
-        <TooltipProvider>
-          <div className="flex h-full">
-            <Sidebar />
-            <main className="flex-1 overflow-y-auto bg-gradient-to-br from-slate-50 to-white md:ml-0">
-              <div className="pt-14 md:pt-0 animate-fade-in">
-                {children}
-              </div>
-            </main>
-          </div>
-          <ToastProvider />
-        </TooltipProvider>
-      </body>
-    </html>
+    <ClerkProvider>
+      <html lang="en" className="h-full">
+        <body suppressHydrationWarning className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
+          <TooltipProvider>
+            {children}
+            <ToastProvider />
+          </TooltipProvider>
+        </body>
+      </html>
+    </ClerkProvider>
   );
 }

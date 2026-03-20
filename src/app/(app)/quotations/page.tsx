@@ -226,7 +226,7 @@ export default function QuotationsPage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <Link href="/" className="text-slate-400 hover:text-slate-600 transition-colors">
+            <Link href="/dashboard" className="text-slate-400 hover:text-slate-600 transition-colors">
               <Icon name="arrowLeft" className="w-4 h-4" />
             </Link>
             <h2 className="text-2xl font-bold text-slate-900">Quick Quotation</h2>

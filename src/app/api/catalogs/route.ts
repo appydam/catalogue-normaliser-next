@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
 import { getSupabase } from "@/lib/supabase";
 import { sanitizeTableName, createDynamicTable } from "@/lib/schema-manager";
 import { normalizeCompanyName, normalizeCatalogName, normalizeFileName } from "@/lib/fingerprint";
@@ -20,6 +21,11 @@ export async function GET() {
 
 // POST /api/catalogs — create catalog record + dynamic table eagerly
 export async function POST(req: NextRequest) {
+  const { userId } = await auth();
+  if (!userId) {
+    return NextResponse.json({ error: "Authentication required to create catalogs" }, { status: 401 });
+  }
+
   const body = (await req.json()) as {
     file_name: string;
     schema: SchemaDiscovery;

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
 import { uploadImageToS3 } from "@/lib/s3";
 
 export const maxDuration = 30;
@@ -11,6 +12,11 @@ export const maxDuration = 30;
  * on a dedicated route so schema/extract-chunk routes stay small.
  */
 export async function POST(req: NextRequest) {
+  const { userId } = await auth();
+  if (!userId) {
+    return NextResponse.json({ error: "Authentication required to create catalogs" }, { status: 401 });
+  }
+
   try {
     const { key, image_base64, content_type } = (await req.json()) as {
       key: string;

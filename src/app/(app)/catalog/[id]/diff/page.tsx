@@ -142,7 +142,7 @@ export default function CatalogDiffPage() {
     return (
       <div className="p-6 md:p-8">
         <nav className="flex items-center gap-1.5 text-sm mb-6">
-          <Link href="/" className="text-slate-400 hover:text-slate-600 transition-colors">
+          <Link href="/dashboard" className="text-slate-400 hover:text-slate-600 transition-colors">
             Catalogs
           </Link>
           <Icon name="chevronRight" className="w-3.5 h-3.5 text-slate-300" />
@@ -188,7 +188,7 @@ export default function CatalogDiffPage() {
     <div className="p-6 md:p-8">
       {/* Breadcrumb */}
       <nav className="flex items-center gap-1.5 text-sm mb-6">
-        <Link href="/" className="text-slate-400 hover:text-slate-600 transition-colors">
+        <Link href="/dashboard" className="text-slate-400 hover:text-slate-600 transition-colors">
           Catalogs
         </Link>
         <Icon name="chevronRight" className="w-3.5 h-3.5 text-slate-300" />
