@@ -89,6 +89,15 @@
     90% { opacity: 0.7; }
     100% { top: 100%; opacity: 0; }
   }
+  @keyframes auroraShift {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    33% { transform: translate(30px, -20px) scale(1.05); }
+    66% { transform: translate(-20px, 15px) scale(0.97); }
+  }
+  @keyframes fadeInUpSlow {
+    from { opacity: 0; transform: translateY(24px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
 }
 
 body {
@@ -214,4 +223,68 @@ body {
     0 -1px 0 rgba(255,255,255,0.8) inset;
   transform: translateY(-2px);
   transition: all 0.3s ease;
+}
+
+/* ── Futuristic Dark Landing Page ── */
+
+.dark-glass {
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.aurora-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(120px);
+  animation: auroraShift 12s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.dot-grid {
+  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.glow-border-card {
+  border: 1px solid rgba(99, 102, 241, 0.15);
+  transition: all 0.3s ease;
+}
+.glow-border-card:hover {
+  border-color: rgba(99, 102, 241, 0.4);
+  box-shadow: 0 0 20px rgba(99, 102, 241, 0.15), 0 0 40px rgba(139, 92, 246, 0.08);
+}
+
+.glow-btn {
+  box-shadow: 0 0 20px rgba(99, 102, 241, 0.4), 0 0 40px rgba(99, 102, 241, 0.2);
+  transition: all 0.2s ease;
+}
+.glow-btn:hover {
+  box-shadow: 0 0 30px rgba(99, 102, 241, 0.5), 0 0 60px rgba(99, 102, 241, 0.3);
+  transform: translateY(-1px);
+}
+
+.gradient-text-landing {
+  background: linear-gradient(135deg, #818cf8, #c084fc, #22d3ee);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.glow-frame {
+  box-shadow:
+    0 0 30px rgba(99, 102, 241, 0.3),
+    0 0 60px rgba(139, 92, 246, 0.15),
+    0 0 120px rgba(99, 102, 241, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+}
+
+.animate-fade-in-up-slow {
+  animation: fadeInUpSlow 0.8s ease-out both;
+}
+
+.step-line {
+  background: linear-gradient(90deg, transparent, #6366f1, #8b5cf6, transparent);
+  height: 1px;
 }
